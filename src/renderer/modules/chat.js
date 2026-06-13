@@ -1,4 +1,5 @@
 import { getCaptureServices } from "./capture-service.js";
+import { getChatAccessibilityPreferences } from "./chat-accessibility.js";
 import { renderMarkdown } from "./markdown.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -10,7 +11,7 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 const INLINE_MIME_PREFIXES = ["image/", "audio/", "video/"];
 const INLINE_MIME_TYPES = new Set(["application/pdf"]);
-const TTS_ENABLED = false;
+const CHAT_CONVERSATION_STORAGE_KEY = "clarity:chat-conversation-id";
 
 const messages = [
   {
@@ -19,6 +20,7 @@ const messages = [
   },
 ];
 
+let conversationId = null;
 let mediaRecorder = null;
 let recordingStream = null;
 let recordedChunks = [];
@@ -30,6 +32,7 @@ const SILENCE_THRESHOLD = 0.01;
 const SILENCE_DURATION_MS = 1200;
 const SILENCE_CHECK_INTERVAL_MS = 100;
 let pendingAttachments = [];
+let currentReaderAudio = null;
 let promptLoopActive = false;
 let promptLoopCancelled = false;
 let resolvePromptWait = null;
@@ -38,6 +41,79 @@ class PromptCancelledError extends Error {
   constructor() {
     super("Prompt cancelled.");
     this.name = "PromptCancelledError";
+  }
+}
+
+function getConversationId() {
+  if (conversationId) return conversationId;
+
+  conversationId = localStorage.getItem(CHAT_CONVERSATION_STORAGE_KEY);
+  if (!conversationId) {
+    conversationId = crypto.randomUUID();
+    localStorage.setItem(CHAT_CONVERSATION_STORAGE_KEY, conversationId);
+  }
+
+  return conversationId;
+}
+
+function createMessage(message) {
+  return {
+    id: crypto.randomUUID(),
+    time: new Date(),
+    ...message,
+  };
+}
+
+function hydrateStoredMessage(message = {}) {
+  return {
+    ...message,
+    time: message.time ? new Date(message.time) : new Date(),
+  };
+}
+
+function getPersistableMessage(message) {
+  return {
+    id: message.id,
+    text: message.text,
+    sender: message.sender,
+    time: message.time,
+    rawResponse: message.rawResponse,
+    plan: message.plan,
+    attachments: message.attachments?.map((attachment) => ({
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      contextOnly: attachment.contextOnly,
+    })),
+  };
+}
+
+async function loadChatHistory(messagesEl, typingIndicator) {
+  if (!window.chatHistory?.list) return;
+
+  try {
+    const storedMessages = await window.chatHistory.list({
+      conversationId: getConversationId(),
+    });
+    if (!Array.isArray(storedMessages) || !storedMessages.length) return;
+
+    messages.splice(0, messages.length, ...storedMessages.map(hydrateStoredMessage));
+    renderMessages(messagesEl, typingIndicator);
+  } catch (error) {
+    console.warn("Failed to load MongoDB chat history:", error);
+  }
+}
+
+async function saveChatMessage(message) {
+  if (!window.chatHistory?.save) return;
+
+  try {
+    await window.chatHistory.save({
+      conversationId: getConversationId(),
+      message: getPersistableMessage(message),
+    });
+  } catch (error) {
+    console.warn("Failed to save MongoDB chat history:", error);
   }
 }
 
@@ -382,8 +458,10 @@ function hideTypingIndicator(typingIndicator) {
 }
 
 function pushSystemMessage(messagesEl, typingIndicator, text) {
-  messages.push({ text, sender: "system", time: new Date() });
+  const message = createMessage({ text, sender: "system" });
+  messages.push(message);
   renderMessages(messagesEl, typingIndicator);
+  saveChatMessage(message);
 }
 
 async function decodeBlobToMonoFloat32(blob) {
@@ -607,12 +685,52 @@ async function askGemini() {
   return window.geminiChat.send({ history });
 }
 
-function speakExplanation(text) {
-  if (!TTS_ENABLED || !text || !window.speechSynthesis) return;
+function stopVoiceReaderAudio() {
+  if (!currentReaderAudio) return;
+  currentReaderAudio.pause();
+  currentReaderAudio.currentTime = 0;
+  currentReaderAudio = null;
+}
 
+function playBrowserSpeech(text) {
+  if (!("speechSynthesis" in window)) return;
+
+  stopVoiceReaderAudio();
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.95;
+  utterance.pitch = 1;
   window.speechSynthesis.speak(utterance);
+}
+
+async function speakExplanation(text) {
+  const cleanText = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!cleanText || !getChatAccessibilityPreferences().screenReader) return;
+
+  try {
+    if (!window.aiTools?.speakAccessibility) {
+      throw new Error("ElevenLabs speech bridge is unavailable.");
+    }
+
+    stopVoiceReaderAudio();
+    window.speechSynthesis?.cancel?.();
+
+    const audio = await window.aiTools.speakAccessibility(cleanText);
+    if (!audio?.base64) {
+      throw new Error("ElevenLabs returned no audio.");
+    }
+
+    currentReaderAudio = new Audio(
+      `data:${audio.mimeType || "audio/mpeg"};base64,${audio.base64}`
+    );
+    currentReaderAudio.onended = () => {
+      currentReaderAudio = null;
+    };
+    await currentReaderAudio.play();
+  } catch (error) {
+    console.warn("ElevenLabs chat reader failed:", error);
+    playBrowserSpeech(cleanText);
+  }
 }
 
 function delay(ms) {
@@ -940,6 +1058,7 @@ export function initChat() {
 
   renderMessages(messagesEl, typingIndicator);
   initChatResizeGrip();
+  loadChatHistory(messagesEl, typingIndicator);
 
   chatInput.addEventListener("mousedown", () => {
     chatInput.focus();
@@ -1029,8 +1148,10 @@ export function initChat() {
       return;
     }
 
-    messages.push({ text, sender: "user", time: new Date(), attachments });
+    const userMessage = createMessage({ text, sender: "user", attachments });
+    messages.push(userMessage);
     renderMessages(messagesEl, typingIndicator);
+    saveChatMessage(userMessage);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
     const aiReply = await handleAiCommand(text);
@@ -1038,14 +1159,15 @@ export function initChat() {
     hideTypingIndicator(typingIndicator);
 
     if (aiReply?.text) {
-      messages.push({
+      const assistantMessage = createMessage({
         text: aiReply.text,
         sender: "system",
-        time: new Date(),
         plan: aiReply.plan,
         rawResponse: aiReply.rawResponse,
       });
+      messages.push(assistantMessage);
       renderMessages(messagesEl, typingIndicator);
+      saveChatMessage(assistantMessage);
     }
 
     chatInput.focus();
