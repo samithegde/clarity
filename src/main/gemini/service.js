@@ -6,11 +6,13 @@ const RESPONSE_SCHEMA = {
   properties: {
     explanation: {
       type: "STRING",
-      description: "A clean, concise 1-sentence vocal instruction.",
+      description:
+        "A clean, concise spoken answer. One sentence for guidance; may be longer for general Q&A when plan is empty.",
     },
     plan: {
       type: "ARRAY",
-      description: "A set of sequential actions to execute on the screen.",
+      description:
+        "Ordered on-screen actions. Return [] when no pointer or highlight is needed — most conversational, factual, or status-only replies should use an empty plan.",
       items: {
         type: "OBJECT",
         properties: {
@@ -44,6 +46,11 @@ const RESPONSE_SCHEMA = {
             type: "STRING",
             description: "Legacy alias for description.",
           },
+          isFinal: {
+            type: "BOOLEAN",
+            description:
+              "True when this is the last on-screen action for the user's goal. The user will see a Complete button instead of Next Step.",
+          },
         },
         required: ["action", "x", "y", "description"],
       },
@@ -53,14 +60,51 @@ const RESPONSE_SCHEMA = {
 };
 
 const SYSTEM_PROMPT =
-  "Your name is Clarity. You help users learn by guiding them through what's on their screen." +
-  "Each user message may include a screenshot. Use it to locate UI elements and return pixel-accurate actions." +
-  "Respond only with JSON matching the schema: explanation is one spoken sentence; plan is an ordered list of actions." +
-  "For cursor guidance actions, use action='cursor' with x, y, description only." +
-  "For highlight actions, use action='highlight' with x, y, w, h, description." +
+  "Your name is Clarity. You help users understand and navigate what's on their screen." +
+  "Each user message may include a screenshot for context." +
+  "Respond only with JSON matching the schema: explanation is the spoken reply; plan is an optional ordered list of on-screen actions." +
+  "IMPORTANT: Default to plan=[]. Only add plan items when the user explicitly needs visual guidance — e.g. 'show me where', 'click', 'find', 'highlight', 'how do I open', or a multi-step UI walkthrough." +
+  "Use plan=[] for greetings, general questions, definitions, summaries, confirmations, troubleshooting advice that does not require pointing, and any reply that can be fully understood from speech alone." +
+  "When plan is non-empty, use the screenshot to locate UI elements and return pixel-accurate coordinates." +
+  "For cursor guidance, use action='cursor' with x, y, description only." +
+  "For highlight emphasis, use action='highlight' with x, y, w, h, description." +
   "Each description explains what the pointer is targeting and appears in the on-screen widget beside the cursor." +
   "Descriptions may use markdown for the widget (bold, lists, inline code)." +
-  "Use an empty plan when no on-screen guidance is needed.";
+  "Set isFinal=true on the last plan item when the user only needs one more on-screen action to finish the goal.";
+
+const PLAN_RETRIEVAL_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    intent: {
+      type: "STRING",
+      description: "Concise statement of what the user wants to accomplish.",
+    },
+    ragQuery: {
+      type: "STRING",
+      description:
+        "Optimized search query for the knowledge base — more specific than the user's words.",
+    },
+    needsOnScreenGuidance: {
+      type: "BOOLEAN",
+      description:
+        "True when the user needs step-by-step UI navigation; false for pure Q&A or conversational replies.",
+    },
+    targetApp: {
+      type: "STRING",
+      description:
+        "The application the user is working in, if identifiable (e.g. 'Google Docs', 'Figma', 'VS Code').",
+    },
+  },
+  required: ["intent", "ragQuery", "needsOnScreenGuidance"],
+};
+
+const PLAN_RETRIEVAL_SYSTEM_PROMPT =
+  "You are an intent parser for a screen-navigation assistant called Clarity. " +
+  "Given the user's latest message and conversation history, produce a JSON object with: " +
+  "intent (concise statement of what the user wants to accomplish), " +
+  "ragQuery (an optimized search query for a how-to knowledge base — rephrase the request as a question), " +
+  "needsOnScreenGuidance (true when the user needs step-by-step UI navigation; false for greetings or pure Q&A), " +
+  "targetApp (the application the user is working in if detectable, otherwise omit).";
 
 function getApiKey() {
   return (
@@ -186,7 +230,23 @@ function parseStructuredResponse(text) {
   };
 }
 
-async function chat(history) {
+function buildRecipeBlock(recipe) {
+  if (!recipe?.chunks?.length) return "";
+
+  const sections = recipe.chunks
+    .map((chunk) => `[Source: ${chunk.source}]\n${chunk.text}`)
+    .join("\n\n---\n\n");
+
+  return (
+    "\n\n[WORKFLOW KNOWLEDGE BASE]\n" +
+    sections +
+    "\n\n[INSTRUCTION] The knowledge base above contains step-by-step recipes. " +
+    "When building your plan, locate the SPECIFIC UI elements named in the recipe (menus, buttons, shortcuts). " +
+    "Follow the recipe steps — do not guess workflow steps not described in the recipe."
+  );
+}
+
+async function chat(history, { recipe } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured. Add it to your .env file.");
@@ -199,6 +259,7 @@ async function chat(history) {
 
   const model = getModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+  const systemPrompt = SYSTEM_PROMPT + buildRecipeBlock(recipe);
 
   const response = await fetch(url, {
     method: "POST",
@@ -208,7 +269,7 @@ async function chat(history) {
     },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
+        parts: [{ text: systemPrompt }],
       },
       contents,
       generationConfig: {
@@ -233,7 +294,15 @@ async function chat(history) {
   }
 
   const structured = parseStructuredResponse(text);
-  return { ...structured, model };
+
+  const retrieval = recipe
+    ? {
+        ragQuery: recipe.ragQuery,
+        sources: [...new Set(recipe.chunks.map((c) => c.source))],
+      }
+    : null;
+
+  return { ...structured, model, retrieval };
 }
 
 const STEP_SYSTEM_PROMPT =
@@ -241,19 +310,25 @@ const STEP_SYSTEM_PROMPT =
   "The user's original goal and the last action taken are provided. " +
   "Look at the new screenshot and return the SINGLE next action to take, " +
   "or an empty plan array if the task is fully complete or cannot proceed. " +
+  "Set isFinal=true on the plan item when it is the last action the user must take. " +
   "The explanation field should be a brief internal note (not spoken). " +
   "Never return more than one plan item.";
 
-async function chatStep(goal, lastActionDescription, screenshotBase64) {
+async function chatStep(goal, lastActionDescription, screenshotBase64, { recipe } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured. Add it to your .env file.");
   }
 
-  const userText =
+  let userText =
     `Original goal: ${goal}\n` +
     `Last action completed: ${lastActionDescription}\n` +
     `What is the single next step? Return empty plan if done.`;
+
+  if (recipe?.chunks?.length) {
+    const recipeSummary = recipe.chunks.map((c) => c.text).join("\n\n");
+    userText = `[Workflow recipe]\n${recipeSummary}\n\n${userText}`;
+  }
 
   const contents = [
     {
@@ -306,25 +381,26 @@ async function chatStep(goal, lastActionDescription, screenshotBase64) {
   return { ...structured, model };
 }
 
-const REFINE_RESPONSE_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    x: { type: "INTEGER", description: "X pixel coordinate of the element center within the cropped image" },
-    y: { type: "INTEGER", description: "Y pixel coordinate of the element center within the cropped image" },
-  },
-  required: ["x", "y"],
-};
-
-const REFINE_SYSTEM_PROMPT =
-  "You are a pixel-accurate UI element locator. " +
-  "You will receive a cropped screenshot and a description of a UI element. " +
-  "Return the EXACT center pixel coordinates of that element within THIS CROPPED IMAGE. " +
-  "Coordinates must be integers within the image bounds. " +
-  "If the element is partially cut off, return the visible center.";
-
-async function refineCoordinate({ description, croppedBase64, cropW, cropH }) {
+async function planRetrieval(userMessage, history) {
   const apiKey = getApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  // Build a short recent history for context (text-only, no screenshots)
+  const recentContents = history
+    .filter((m) => m.sender === "user" || (m.sender === "system" && m.rawResponse))
+    .slice(-6)
+    .map((m) => ({
+      role: m.sender === "user" ? "user" : "model",
+      parts: [{ text: m.text || "" }],
+    }))
+    .filter((e) => e.parts[0].text);
+
+  const contents = [
+    ...recentContents,
+    { role: "user", parts: [{ text: `Latest user message: ${userMessage}` }] },
+  ];
 
   const model = getModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
@@ -336,46 +412,40 @@ async function refineCoordinate({ description, croppedBase64, cropW, cropH }) {
       "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: REFINE_SYSTEM_PROMPT }] },
-      contents: [{
-        role: "user",
-        parts: [
-          {
-            text: `Find the exact center pixel of: "${description}"\nCropped image is ${cropW}x${cropH} pixels. Return coordinates within this crop only.`,
-          },
-          { inlineData: { mimeType: "image/jpeg", data: croppedBase64 } },
-        ],
-      }],
+      systemInstruction: {
+        parts: [{ text: PLAN_RETRIEVAL_SYSTEM_PROMPT }],
+      },
+      contents,
       generationConfig: {
         responseMimeType: "application/json",
-        responseSchema: REFINE_RESPONSE_SCHEMA,
+        responseSchema: PLAN_RETRIEVAL_SCHEMA,
       },
     }),
   });
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload?.error?.message || `Gemini refine error (${response.status})`);
+    throw new Error(
+      payload?.error?.message || `Gemini plan error (${response.status})`
+    );
   }
 
   const text = extractText(payload);
-  if (!text) throw new Error("Gemini refine returned empty response.");
-
-  const parsed = JSON.parse(text);
-  const x = Math.round(Number(parsed.x));
-  const y = Math.round(Number(parsed.y));
-
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error("Gemini refine returned invalid coordinates.");
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      intent: userMessage,
+      ragQuery: userMessage,
+      needsOnScreenGuidance: true,
+    };
   }
-
-  return { x, y };
 }
 
 module.exports = {
   chat,
   chatStep,
-  refineCoordinate,
+  planRetrieval,
   getApiKey,
   getModel,
   RESPONSE_SCHEMA,

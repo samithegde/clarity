@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld("chatHistory", {
   list: (payload) => ipcRenderer.invoke("chat-history:list", payload),
   save: (payload) => ipcRenderer.invoke("chat-history:save", payload),
   clear: (payload) => ipcRenderer.invoke("chat-history:clear", payload),
+  status: () => ipcRenderer.invoke("chat-history:status"),
+});
+
+contextBridge.exposeInMainWorld("ragKb", {
+  ingest: (payload) => ipcRenderer.invoke("rag:ingest", payload),
+  status: () => ipcRenderer.invoke("rag:status"),
 });
 
 contextBridge.exposeInMainWorld("chatWindow", {
@@ -86,7 +92,9 @@ contextBridge.exposeInMainWorld("aiTools", {
   clearHighlights: () => ipcRenderer.invoke("ai-tools:highlighter-clear"),
   showNextButton: () => ipcRenderer.invoke("ai-tools:show-next-button"),
   hideNextButton: () => ipcRenderer.invoke("ai-tools:hide-next-button"),
+  showCompleteButton: () => ipcRenderer.invoke("ai-tools:show-complete-button"),
   emitNextClicked: () => ipcRenderer.send("ai-tools:next-clicked"),
+  emitCompleteClicked: () => ipcRenderer.send("ai-tools:complete-clicked"),
   emitPromptCancelled: () => ipcRenderer.send("ai-tools:prompt-cancelled"),
   onNextButtonShow: (callback) => {
     const handler = () => callback();
@@ -98,6 +106,11 @@ contextBridge.exposeInMainWorld("aiTools", {
     ipcRenderer.on("ai:next-button:hide", handler);
     return () => ipcRenderer.removeListener("ai:next-button:hide", handler);
   },
+  onCompleteButtonShow: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:complete-button:show", handler);
+    return () => ipcRenderer.removeListener("ai:complete-button:show", handler);
+  },
   onNextClicked: (callback) => {
     const handler = () => callback();
     ipcRenderer.on("ai:next:clicked", handler);
@@ -107,6 +120,11 @@ contextBridge.exposeInMainWorld("aiTools", {
     const handler = () => callback();
     ipcRenderer.on("ai:prompt:cancelled", handler);
     return () => ipcRenderer.removeListener("ai:prompt:cancelled", handler);
+  },
+  onCompleteClicked: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:complete:clicked", handler);
+    return () => ipcRenderer.removeListener("ai:complete:clicked", handler);
   },
   onCursorMove: (callback) => {
     const handler = (_event, payload) => callback(payload);
