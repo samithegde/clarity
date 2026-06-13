@@ -6,6 +6,7 @@ const { registerIpcHandlers } = require("./ipc");
 const { restoreWindowsTaskbar } = require("./utils/taskbar");
 const { configureCaptureSession } = require("./capture/session");
 const { closeMongoConnection } = require("./mongodb/chat-history");
+const { logMoondreamStartupStatus } = require("./localization/moondream-service");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, "../../.env");
@@ -76,6 +77,7 @@ app.whenReady().then(async () => {
   app.dock?.hide?.();
   configureCaptureSession();
   await restoreWindowsTaskbar();
+  await logMoondreamStartupStatus();
   createWindows();
   createTray();
 

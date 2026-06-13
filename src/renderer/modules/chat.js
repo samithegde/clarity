@@ -1,7 +1,6 @@
 import { getCaptureServices } from "./capture-service.js";
 import { getChatAccessibilityPreferences } from "./chat-accessibility.js";
 import { cropBase64Image } from "./context-crop.js";
-import { applyMicroGridToCrop } from "./micro-grid-annotate.js";
 import { renderMarkdown } from "./markdown.js";
 import { annotateScreenshot } from "./som-annotate.js";
 
@@ -1072,24 +1071,17 @@ async function refineStepCoordinates(step) {
       }
     }
 
-    if (!refined && window.localization?.microGridRefine) {
-      const gridded = await applyMicroGridToCrop(
-        crop.croppedBase64,
-        crop.cropW,
-        crop.cropH
-      );
-      const micro = await window.localization.microGridRefine({
-        griddedBase64: gridded.base64,
-        cropW: gridded.cropW,
-        cropH: gridded.cropH,
+    if (!refined && window.localization?.moondreamPoint) {
+      const moondream = await window.localization.moondreamPoint({
+        croppedBase64: crop.croppedBase64,
+        cropW: crop.cropW,
+        cropH: crop.cropH,
         targetElement: targetText || step.description || step.label || "target element",
-        columns: gridded.columns,
-        rows: gridded.rows,
       });
 
-      if (micro && Number.isFinite(micro.x) && Number.isFinite(micro.y)) {
-        refined = micro;
-        refineMethod = micro.method || "ollama-micro-grid";
+      if (moondream && Number.isFinite(moondream.x) && Number.isFinite(moondream.y)) {
+        refined = moondream;
+        refineMethod = moondream.method || "moondream-point";
       }
     }
 

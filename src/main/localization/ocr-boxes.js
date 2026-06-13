@@ -1,4 +1,6 @@
-const { execFile } = require("child_process");
+const { runPowerShellJson: runPowerShellJsonScript } = require("../powershell/run-json");
+
+const OCR_TIMEOUT_MS = 8000;
 
 function levenshtein(a, b) {
   const left = String(a ?? "").toLowerCase();
@@ -40,30 +42,6 @@ function scoreCandidate(candidateText, targetText) {
   if (candidate.includes(target) || target.includes(candidate)) return 0.9;
   if (levenshtein(candidate, target) <= 2) return 0.8;
   return 0;
-}
-
-function runPowerShellJson(script, inputBase64, timeout = 2000) {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { timeout, maxBuffer: 1024 * 1024 },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        try {
-          resolve(JSON.parse(stdout || "[]"));
-        } catch (parseError) {
-          reject(parseError);
-        }
-      }
-    );
-
-    child.stdin.end(inputBase64);
-  });
 }
 
 async function readWindowsOcrBoxes(base64) {
@@ -122,8 +100,9 @@ try {
   foreach ($line in $result.Lines) {
     foreach ($word in $line.Words) {
       $rect = $word.BoundingRect
+      $text = ([string]$word.Text) -replace '[\x00-\x1F\x7F]', ' '
       $boxes.Add([pscustomobject]@{
-        text = [string]$word.Text
+        text = $text
         x = [int][Math]::Round($rect.X)
         y = [int][Math]::Round($rect.Y)
         w = [int][Math]::Round($rect.Width)
@@ -140,7 +119,10 @@ try {
 `;
 
   try {
-    const boxes = await runPowerShellJson(script, base64);
+    const boxes = await runPowerShellJsonScript(script, {
+      timeout: OCR_TIMEOUT_MS,
+      stdin: base64,
+    });
     return Array.isArray(boxes) ? boxes : [];
   } catch (error) {
     console.warn("[localization] OCR unavailable:", error.message);

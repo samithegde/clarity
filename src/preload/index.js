@@ -27,8 +27,8 @@ contextBridge.exposeInMainWorld("localization", {
   isSomEnabled: () => ipcRenderer.invoke("localization:som-enabled"),
   discoverMarks: () => ipcRenderer.invoke("ui-marks:discover"),
   ocrCrop: (payload) => ipcRenderer.invoke("localization:ocr-crop", payload),
-  microGridRefine: (payload) =>
-    ipcRenderer.invoke("localization:micro-grid-refine", payload),
+  moondreamPoint: (payload) =>
+    ipcRenderer.invoke("localization:moondream-point", payload),
 });
 
 contextBridge.exposeInMainWorld("chatHistory", {

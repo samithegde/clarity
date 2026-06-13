@@ -1,6 +1,6 @@
 const { discoverMarks } = require("../ui-automation/mark-discovery");
 const { getOcrCandidates } = require("../localization/ocr-boxes");
-const { refineWithMicroGrid } = require("../localization/micro-grid-refine");
+const { refineWithMoondreamPoint } = require("../localization/moondream-point-refine");
 
 function isSomEnabled() {
   return process.env.SOM_ENABLED !== "false";
@@ -29,31 +29,27 @@ function registerLocalizationIpc(ipcMain) {
     return getOcrCandidates({ croppedBase64, targetText });
   });
 
-  ipcMain.handle("localization:micro-grid-refine", async (_event, payload) => {
-    const {
-      griddedBase64,
-      cropW,
-      cropH,
-      targetElement,
-      columns,
-      rows,
-    } = payload ?? {};
+  ipcMain.handle("localization:moondream-point", async (_event, payload) => {
+    const { croppedBase64, cropW, cropH, targetElement } = payload ?? {};
 
-    if (!griddedBase64) {
+    if (!croppedBase64) {
       return null;
     }
 
     try {
-      return await refineWithMicroGrid({
-        griddedBase64,
+      return await refineWithMoondreamPoint({
+        croppedBase64,
         cropW,
         cropH,
         targetElement,
-        columns,
-        rows,
       });
     } catch (error) {
-      console.warn("[localization] micro-grid refine failed:", error.message);
+      const message = error?.message || String(error);
+      if (message.includes("unavailable") || message.includes("apiKey")) {
+        console.warn("[localization] Moondream point skipped:", message);
+      } else {
+        console.warn("[localization] Moondream point failed:", message);
+      }
       return null;
     }
   });

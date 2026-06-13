@@ -1,32 +1,11 @@
-const { execFile } = require("child_process");
 const { screen } = require("electron");
+const { runPowerShellJson } = require("../powershell/run-json");
 const { MARK_SOURCES, MAX_MARKS, MIN_MARK_SIZE } = require("../../shared/localization-types");
 
 const UIA_MIN_MARKS = 8;
 const GRID_COLUMNS = 12;
 const GRID_ROWS = 8;
-
-function runPowerShellJson(script, timeout = 2500) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { timeout, maxBuffer: 1024 * 1024 * 4 },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        try {
-          resolve(JSON.parse(stdout || "[]"));
-        } catch (parseError) {
-          reject(parseError);
-        }
-      }
-    );
-  });
-}
+const UIA_TIMEOUT_MS = 15000;
 
 function getPrimaryDisplayBounds() {
   const display = screen.getPrimaryDisplay();
@@ -151,6 +130,10 @@ $elements = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
   $condition
 )
 
+function Sanitize-Text([string]$value) {
+  return ([string]$value) -replace '[\x00-\x1F\x7F\u2028\u2029]', ' '
+}
+
 $marks = New-Object System.Collections.Generic.List[object]
 $max = [Math]::Min($elements.Count, 1200)
 for ($i = 0; $i -lt $max; $i++) {
@@ -166,9 +149,9 @@ for ($i = 0; $i -lt $max; $i++) {
     y = [int][Math]::Round($rect.Y)
     w = [int][Math]::Round($rect.Width)
     h = [int][Math]::Round($rect.Height)
-    label = [string]$current.Name
-    automationId = [string]$current.AutomationId
-    controlType = [string]$current.ControlType.ProgrammaticName
+    label = Sanitize-Text $current.Name
+    automationId = Sanitize-Text $current.AutomationId
+    controlType = Sanitize-Text $current.ControlType.ProgrammaticName
   })
 }
 
@@ -176,7 +159,7 @@ $marks | ConvertTo-Json -Compress
 `;
 
   try {
-    const marks = await runPowerShellJson(script);
+    const marks = await runPowerShellJson(script, { timeout: UIA_TIMEOUT_MS });
     return (Array.isArray(marks) ? marks : [marks])
       .map((mark) => normalizeMark(mark, MARK_SOURCES.UIA))
       .filter(Boolean);
