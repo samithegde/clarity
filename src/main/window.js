@@ -7,6 +7,7 @@ const CHAT_HEIGHT = 650;
 const CHAT_MARGIN = 24;
 const MINI_CHAT_SIZE = 56;
 const MINI_CHAT_MARGIN = 24;
+const WIN32_CAPTION_INSET = process.platform === "win32" ? 31 : 0;
 const DASHBOARD_ENABLED = false;
 
 let overlayWindows = [];
@@ -35,12 +36,42 @@ function getChatBounds() {
 
 function getMiniChatBounds() {
   const workArea = getWorkAreaBounds();
+  const totalHeight = MINI_CHAT_SIZE + WIN32_CAPTION_INSET;
   return {
     x: workArea.x + workArea.width - MINI_CHAT_SIZE - MINI_CHAT_MARGIN,
-    y: workArea.y + workArea.height - MINI_CHAT_SIZE - MINI_CHAT_MARGIN,
+    y:
+      workArea.y +
+      workArea.height -
+      MINI_CHAT_SIZE -
+      MINI_CHAT_MARGIN -
+      WIN32_CAPTION_INSET,
     width: MINI_CHAT_SIZE,
-    height: MINI_CHAT_SIZE,
+    height: totalHeight,
   };
+}
+
+function createMiniChatCircleShape(diameter, offsetY = 0) {
+  const radius = diameter / 2;
+  const centerX = diameter / 2;
+  const rects = [];
+
+  for (let row = 0; row < diameter; row += 1) {
+    const y = offsetY + row;
+    const dy = row - radius + 0.5;
+    const halfWidth = Math.sqrt(Math.max(0, radius * radius - dy * dy));
+    const x = Math.max(0, Math.floor(centerX - halfWidth));
+    const width = Math.min(diameter - x, Math.ceil(2 * halfWidth));
+    if (width > 0) {
+      rects.push({ x, y, width, height: 1 });
+    }
+  }
+
+  return rects;
+}
+
+function applyMiniChatShape(win) {
+  if (process.platform !== "win32" || !win || win.isDestroyed()) return;
+  win.setShape(createMiniChatCircleShape(MINI_CHAT_SIZE, WIN32_CAPTION_INSET));
 }
 
 function createOverlayWindowForDisplay(display) {
@@ -164,13 +195,20 @@ function createMiniChatWindow() {
     transparent: true,
     resizable: false,
     movable: false,
-    focusable: true,
+    focusable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
     autoHideMenuBar: true,
     backgroundColor: "#00000000",
-    ...(process.platform === "win32" ? { thickFrame: false } : {}),
+    ...(process.platform === "win32"
+      ? {
+          type: "toolbar",
+          thickFrame: false,
+          roundedCorners: true,
+          backgroundMaterial: "none",
+        }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
@@ -179,6 +217,7 @@ function createMiniChatWindow() {
   });
 
   miniChatWindow.setMenu(null);
+  miniChatWindow.setMenuBarVisibility(false);
   miniChatWindow.setAlwaysOnTop(true, "screen-saver", 2);
   miniChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   keepWindowOffTaskbar(miniChatWindow);
@@ -186,9 +225,9 @@ function createMiniChatWindow() {
 
   miniChatWindow.once("ready-to-show", () => {
     keepWindowOffTaskbar(miniChatWindow);
+    applyMiniChatShape(miniChatWindow);
   });
 
-  miniChatWindow.on("focus", () => keepWindowOffTaskbar(miniChatWindow));
   miniChatWindow.on("closed", () => {
     miniChatWindow = null;
   });
@@ -200,6 +239,7 @@ function repositionMiniChatWindow() {
   const win = getMiniChatWindow();
   if (!win) return;
   win.setBounds(getMiniChatBounds());
+  applyMiniChatShape(win);
 }
 
 function showMiniChatWindow() {
@@ -207,6 +247,7 @@ function showMiniChatWindow() {
   repositionMiniChatWindow();
   win.showInactive();
   keepWindowOffTaskbar(win);
+  applyMiniChatShape(win);
   return win;
 }
 
@@ -376,6 +417,22 @@ function sendOverlayPointAction(channel, payload = {}) {
   );
 }
 
+function setOverlaysInteractive(interactive) {
+  for (const win of getOverlayWindows()) {
+    if (!win.isDestroyed()) {
+      win.setIgnoreMouseEvents(!interactive, { forward: !interactive });
+    }
+  }
+}
+
+function sendToOverlays(channel, payload) {
+  for (const win of getOverlayWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(channel, payload ?? {});
+    }
+  }
+}
+
 function notifyDashboard(channel, payload) {
   const win = getDashboardWindow();
   if (win) {
@@ -463,6 +520,8 @@ module.exports = {
   toggleChatWindow,
   sendToRenderer,
   sendOverlayPointAction,
+  setOverlaysInteractive,
+  sendToOverlays,
   DASHBOARD_ENABLED,
   createDashboardWindow,
   getDashboardWindow,

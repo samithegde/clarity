@@ -1,8 +1,15 @@
-const { sendToRenderer, sendOverlayPointAction } = require("../window");
+const {
+  sendToRenderer,
+  sendOverlayPointAction,
+  setOverlaysInteractive,
+  sendToOverlays,
+  getChatWindow,
+} = require("../window");
 
 function registerAiToolsIpc(ipcMain) {
   ipcMain.handle("ai-tools:cursor-move", (_event, payload) => {
-    sendOverlayPointAction("ai:cursor:move", payload);
+    sendToRenderer("ai:cursor:visibility", { visible: false });
+    sendOverlayPointAction("ai:cursor:move", { ...payload, visible: true });
     return { ok: true };
   });
 
@@ -29,6 +36,35 @@ function registerAiToolsIpc(ipcMain) {
   ipcMain.handle("ai-tools:highlighter-clear", () => {
     sendToRenderer("ai:highlighter:clear");
     return { ok: true };
+  });
+
+  ipcMain.handle("ai-tools:show-next-button", () => {
+    setOverlaysInteractive(true);
+    sendToOverlays("ai:next-button:show");
+    return { ok: true };
+  });
+
+  ipcMain.handle("ai-tools:hide-next-button", () => {
+    setOverlaysInteractive(false);
+    sendToOverlays("ai:next-button:hide");
+    return { ok: true };
+  });
+
+  ipcMain.on("ai-tools:next-clicked", () => {
+    setOverlaysInteractive(false);
+    const chatWin = getChatWindow();
+    if (chatWin && !chatWin.isDestroyed()) {
+      chatWin.webContents.send("ai:next:clicked");
+    }
+  });
+
+  ipcMain.on("ai-tools:prompt-cancelled", () => {
+    setOverlaysInteractive(false);
+    sendToOverlays("ai:next-button:hide");
+    const chatWin = getChatWindow();
+    if (chatWin && !chatWin.isDestroyed()) {
+      chatWin.webContents.send("ai:prompt:cancelled");
+    }
   });
 }
 

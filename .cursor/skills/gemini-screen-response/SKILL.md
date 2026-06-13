@@ -45,12 +45,16 @@ Use this as `generationConfig.responseSchema` with `generationConfig.responseMim
             "type": "INTEGER",
             "description": "The height in pixels (required when action='highlight')."
           },
+          "description": {
+            "type": "STRING",
+            "description": "What the cursor is pointing at — shown in the widget beside the pointer."
+          },
           "label": {
             "type": "STRING",
-            "description": "Short text shown near cursor guidance or used to describe the highlight target."
+            "description": "Legacy alias for description."
           }
         },
-        "required": ["action", "x", "y", "label"]
+        "required": ["action", "x", "y", "description"]
       }
     }
   },
@@ -69,7 +73,7 @@ generationConfig: {
 }
 ```
 
-Parse the model text as JSON. Validate `explanation` (string) and `plan` (array). Each plan item must include `action`, integer `x` and `y`, and string `label`. For `highlight`, also require integer `w` and `h`.
+Parse the model text as JSON. Validate `explanation` (string) and `plan` (array). Each plan item must include `action`, integer `x` and `y`, and string `description` (or legacy `label`). For `highlight`, also require integer `w` and `h`.
 
 ## Field usage in this app
 
@@ -84,8 +88,8 @@ For each item in `plan`, in order:
 
 For each item in `plan`, execute by `action`:
 
-- `cursor`: `window.aiTools.moveCursor({ x, y, label, stepIndex, stepTotal, animate: true, duration: 350 })` — shows a step widget that animates out from the cursor with the action text.
-- `highlight`: move cursor to the target center with `label`, then `window.aiTools.highlightRect({ x, y, width: w, height: h, duration: 5000 })`
+- `cursor`: `window.aiTools.moveCursor({ x, y, description, stepIndex, stepTotal, animate: true, duration: 350 })` — shows a widget beside the cursor with the target description.
+- `highlight`: move cursor to the target center with `description`, then `window.aiTools.highlightRect({ x, y, width: w, height: h, duration: 5000 })`
 
 Coordinates are absolute display pixels matching the attached screenshot. An empty `plan` array is valid when no on-screen guidance is needed.
 
@@ -98,4 +102,5 @@ Tell the model to:
 - Keep `explanation` to one spoken sentence
 - Order `plan` steps in the sequence the user should follow
 - Use `cursor` for guidance movement and `highlight` for box emphasis
-- `label` fields may use markdown (`**bold**`, lists, `` `code` ``, links) for the on-screen step widget
+- `label` fields may use markdown (`**bold**`, lists, `` `code` ``, links) for the on-screen widget
+- `description` is the primary field for what the pointer is targeting

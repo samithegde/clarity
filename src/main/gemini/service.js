@@ -35,13 +35,17 @@ const RESPONSE_SCHEMA = {
             type: "INTEGER",
             description: "Height in pixels. Required only when action is 'highlight'.",
           },
-          label: {
+          description: {
             type: "STRING",
             description:
-              "Short text shown near cursor guidance or used to describe the highlight target. Supports markdown (bold, lists, code, links).",
+              "What the cursor is pointing at — shown in the widget beside the pointer. Supports markdown (bold, lists, code, links).",
+          },
+          label: {
+            type: "STRING",
+            description: "Legacy alias for description.",
           },
         },
-        required: ["action", "x", "y", "label"],
+        required: ["action", "x", "y", "description"],
       },
     },
   },
@@ -52,9 +56,10 @@ const SYSTEM_PROMPT =
   "Your name is Clarity. You help users learn by guiding them through what's on their screen." +
   "Each user message may include a screenshot. Use it to locate UI elements and return pixel-accurate actions." +
   "Respond only with JSON matching the schema: explanation is one spoken sentence; plan is an ordered list of actions." +
-  "For cursor guidance actions, use action='cursor' with x, y, label only." +
-  "For highlight actions, use action='highlight' with x, y, w, h, label." +
-  "Plan labels may use markdown for the on-screen step widget (bold, lists, inline code)." +
+  "For cursor guidance actions, use action='cursor' with x, y, description only." +
+  "For highlight actions, use action='highlight' with x, y, w, h, description." +
+  "Each description explains what the pointer is targeting and appears in the on-screen widget beside the cursor." +
+  "Descriptions may use markdown for the widget (bold, lists, inline code)." +
   "Use an empty plan when no on-screen guidance is needed.";
 
 function getApiKey() {
@@ -131,18 +136,18 @@ function normalizePlanItem(item) {
     rawAction || (item?.w != null && item?.h != null ? "highlight" : "cursor");
   const x = Math.round(Number(item?.x));
   const y = Math.round(Number(item?.y));
-  const label = String(item?.label ?? "").trim();
+  const description = String(item?.description ?? item?.label ?? "").trim();
 
   if (!["cursor", "highlight"].includes(action)) {
     return null;
   }
 
-  if (![x, y].every(Number.isFinite) || !label) {
+  if (![x, y].every(Number.isFinite) || !description) {
     return null;
   }
 
   if (action === "cursor") {
-    return { action, x, y, label };
+    return { action, x, y, label: description, description };
   }
 
   const w = Math.round(Number(item?.w));
@@ -151,7 +156,7 @@ function normalizePlanItem(item) {
     return null;
   }
 
-  return { action, x, y, w, h, label };
+  return { action, x, y, w, h, label: description, description };
 }
 
 function parseStructuredResponse(text) {
@@ -231,8 +236,79 @@ async function chat(history) {
   return { ...structured, model };
 }
 
+const STEP_SYSTEM_PROMPT =
+  "You are a screen-navigation assistant mid-task. " +
+  "The user's original goal and the last action taken are provided. " +
+  "Look at the new screenshot and return the SINGLE next action to take, " +
+  "or an empty plan array if the task is fully complete or cannot proceed. " +
+  "The explanation field should be a brief internal note (not spoken). " +
+  "Never return more than one plan item.";
+
+async function chatStep(goal, lastActionDescription, screenshotBase64) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured. Add it to your .env file.");
+  }
+
+  const userText =
+    `Original goal: ${goal}\n` +
+    `Last action completed: ${lastActionDescription}\n` +
+    `What is the single next step? Return empty plan if done.`;
+
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { text: userText },
+        ...(screenshotBase64
+          ? [{ inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } }]
+          : []),
+      ],
+    },
+  ];
+
+  const model = getModel();
+  const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: STEP_SYSTEM_PROMPT }],
+      },
+      contents,
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: RESPONSE_SCHEMA,
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message =
+      payload?.error?.message ||
+      payload?.error ||
+      `Gemini step error (${response.status})`;
+    throw new Error(message);
+  }
+
+  const text = extractText(payload);
+  if (!text) {
+    throw new Error("Gemini step returned an empty response.");
+  }
+
+  const structured = parseStructuredResponse(text);
+  return { ...structured, model };
+}
+
 module.exports = {
   chat,
+  chatStep,
   getApiKey,
   getModel,
   RESPONSE_SCHEMA,

@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("whisper", {
 
 contextBridge.exposeInMainWorld("geminiChat", {
   send: (payload) => ipcRenderer.invoke("chat:send", payload),
+  step: (payload) => ipcRenderer.invoke("chat:step", payload),
 });
 
 contextBridge.exposeInMainWorld("chatWindow", {
@@ -28,6 +29,7 @@ contextBridge.exposeInMainWorld("chatWindow", {
 
 contextBridge.exposeInMainWorld("minichat", {
   restore: () => ipcRenderer.invoke("window:restore-chat"),
+  captionInset: process.platform === "win32" ? 31 : 0,
 });
 
 contextBridge.exposeInMainWorld("dashboard", {
@@ -60,6 +62,30 @@ contextBridge.exposeInMainWorld("aiTools", {
   highlightStroke: (payload) =>
     ipcRenderer.invoke("ai-tools:highlighter-stroke", payload),
   clearHighlights: () => ipcRenderer.invoke("ai-tools:highlighter-clear"),
+  showNextButton: () => ipcRenderer.invoke("ai-tools:show-next-button"),
+  hideNextButton: () => ipcRenderer.invoke("ai-tools:hide-next-button"),
+  emitNextClicked: () => ipcRenderer.send("ai-tools:next-clicked"),
+  emitPromptCancelled: () => ipcRenderer.send("ai-tools:prompt-cancelled"),
+  onNextButtonShow: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:next-button:show", handler);
+    return () => ipcRenderer.removeListener("ai:next-button:show", handler);
+  },
+  onNextButtonHide: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:next-button:hide", handler);
+    return () => ipcRenderer.removeListener("ai:next-button:hide", handler);
+  },
+  onNextClicked: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:next:clicked", handler);
+    return () => ipcRenderer.removeListener("ai:next:clicked", handler);
+  },
+  onPromptCancelled: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:prompt:cancelled", handler);
+    return () => ipcRenderer.removeListener("ai:prompt:cancelled", handler);
+  },
   onCursorMove: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("ai:cursor:move", handler);

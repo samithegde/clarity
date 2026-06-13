@@ -80,7 +80,7 @@ export function initVirtualCursor() {
           ? `Step ${stepIndex} of ${stepTotal}`
           : `Step ${stepIndex}`;
       } else {
-        widgetBadge.textContent = "Next";
+        widgetBadge.textContent = "Pointing at";
       }
     }
 
@@ -112,15 +112,16 @@ export function initVirtualCursor() {
       return;
     }
 
+    const pointerText = String(payload.description ?? payload.label ?? "").trim();
     const shouldShow =
-      payload.visible === true || state.visible || Boolean(payload.label);
+      payload.visible === true || state.visible || Boolean(pointerText);
 
     if (shouldShow) {
       state.visible = true;
       cursor.classList.remove("hidden");
     }
 
-    if (payload.label && state.visible) {
+    if (pointerText && state.visible) {
       const revealDelay = payload.animate
         ? Number(payload.duration ?? DEFAULTS.duration)
         : 0;
@@ -128,12 +129,12 @@ export function initVirtualCursor() {
       clearRevealTimer();
       revealTimer = setTimeout(() => {
         revealTimer = null;
-        showStepWidget(payload.label, {
+        showStepWidget(pointerText, {
           stepIndex: payload.stepIndex,
           stepTotal: payload.stepTotal,
         });
       }, revealDelay);
-    } else if (!payload.label) {
+    } else if (!pointerText) {
       hideStepWidget();
     }
   }
@@ -144,6 +145,32 @@ export function initVirtualCursor() {
     cursor.classList.toggle("hidden", !visible);
     if (!visible) hideStepWidget();
   });
+
+  const promptControls = document.getElementById("ai-prompt-controls");
+  const nextBtn = document.getElementById("ai-next-btn");
+  const cancelBtn = document.getElementById("ai-cancel-btn");
+
+  if (promptControls && nextBtn) {
+    window.aiTools?.onNextButtonShow(() => {
+      promptControls.style.left = `${state.x - 40}px`;
+      promptControls.style.top = `${state.y + 28}px`;
+      promptControls.classList.remove("hidden");
+    });
+
+    window.aiTools?.onNextButtonHide(() => {
+      promptControls.classList.add("hidden");
+    });
+
+    nextBtn.addEventListener("click", () => {
+      promptControls.classList.add("hidden");
+      window.aiTools?.emitNextClicked();
+    });
+
+    cancelBtn?.addEventListener("click", () => {
+      promptControls.classList.add("hidden");
+      window.aiTools?.emitPromptCancelled();
+    });
+  }
 
   window.addEventListener("resize", () => {
     state.x = clamp(state.x, 0, window.innerWidth);

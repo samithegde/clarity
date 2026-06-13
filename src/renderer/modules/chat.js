@@ -24,6 +24,37 @@ let recordingStream = null;
 let recordedChunks = [];
 let isTranscribing = false;
 let pendingAttachments = [];
+let promptLoopActive = false;
+let promptLoopCancelled = false;
+let resolvePromptWait = null;
+
+class PromptCancelledError extends Error {
+  constructor() {
+    super("Prompt cancelled.");
+    this.name = "PromptCancelledError";
+  }
+}
+
+export function cancelPrompt() {
+  if (!promptLoopActive) return false;
+
+  promptLoopCancelled = true;
+  window.aiTools?.hideNextButton?.();
+  resolvePromptWait?.();
+  return true;
+}
+
+function beginPromptLoop() {
+  promptLoopActive = true;
+  promptLoopCancelled = false;
+  resolvePromptWait = null;
+}
+
+function resetPromptLoopState() {
+  promptLoopActive = false;
+  promptLoopCancelled = false;
+  resolvePromptWait = null;
+}
 
 function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -263,6 +294,25 @@ async function captureScreenAttachment() {
   }
 }
 
+async function captureScreenBase64() {
+  try {
+    const { screenCapture } = getCaptureServices();
+
+    if (!screenCapture.running) {
+      const sources = await screenCapture.listSources({ types: ["screen"] });
+      if (!sources.length) return null;
+      await screenCapture.start({ sourceId: sources[0].id });
+    }
+
+    const frame = await screenCapture.captureFrameAsync({ quality: 0.65 });
+    if (!frame?.dataUrl) return null;
+
+    return dataUrlToBase64(frame.dataUrl);
+  } catch {
+    return null;
+  }
+}
+
 function formatMessageTime(date = new Date()) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
@@ -490,56 +540,126 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function executeGeminiPlan(plan) {
-  if (!Array.isArray(plan) || !plan.length || !window.aiTools) return;
+function waitForNextClick() {
+  return new Promise((resolve, reject) => {
+    if (promptLoopCancelled) {
+      reject(new PromptCancelledError());
+      return;
+    }
+
+    const cleanup = () => {
+      unsubNext?.();
+      unsubCancel?.();
+      resolvePromptWait = null;
+    };
+
+    const unsubNext = window.aiTools?.onNextClicked(() => {
+      cleanup();
+      resolve();
+    });
+
+    const unsubCancel = window.aiTools?.onPromptCancelled(() => {
+      promptLoopCancelled = true;
+      window.aiTools?.hideNextButton?.();
+      cleanup();
+      reject(new PromptCancelledError());
+    });
+
+    resolvePromptWait = () => {
+      cleanup();
+      reject(new PromptCancelledError());
+    };
+  });
+}
+
+const MAX_HYBRID_STEPS = 10;
+
+async function executeSingleStep(step, stepMeta) {
+  const pointerText = step.description || step.label;
+
+  if (step.action === "cursor") {
+    await window.aiTools.moveCursor({
+      x: step.x,
+      y: step.y,
+      description: pointerText,
+      label: pointerText,
+      animate: true,
+      duration: 350,
+      ...stepMeta,
+    });
+    return;
+  }
+
+  if (step.action === "highlight") {
+    const centerX = step.x + Math.round(step.w / 2);
+    const centerY = step.y + Math.round(step.h / 2);
+
+    await window.aiTools.moveCursor({
+      x: centerX,
+      y: centerY,
+      description: pointerText,
+      label: pointerText,
+      animate: true,
+      duration: 350,
+      ...stepMeta,
+    });
+    await window.aiTools.highlightRect({
+      x: step.x,
+      y: step.y,
+      width: step.w,
+      height: step.h,
+      duration: 5000,
+    });
+  }
+}
+
+async function executeHybridLoop(goal, firstStep) {
+  if (!firstStep || !window.aiTools) return;
+
+  beginPromptLoop();
 
   await window.aiTools.ensureOverlay?.();
   await window.aiTools.setCursorVisible(true);
   await window.aiTools.clearHighlights();
 
-  for (const [index, step] of plan.entries()) {
-    const stepMeta = {
-      stepIndex: index + 1,
-      stepTotal: plan.length,
-    };
+  let currentStep = firstStep;
+  let stepNumber = 1;
 
-    if (step.action === "cursor") {
-      await window.aiTools.moveCursor({
-        x: step.x,
-        y: step.y,
-        label: step.label,
-        animate: true,
-        duration: 350,
-        ...stepMeta,
+  try {
+    while (currentStep && stepNumber <= MAX_HYBRID_STEPS && !promptLoopCancelled) {
+      await executeSingleStep(currentStep, { stepIndex: stepNumber });
+      if (promptLoopCancelled) break;
+
+      await window.aiTools.showNextButton();
+
+      try {
+        await waitForNextClick();
+      } catch (error) {
+        if (error instanceof PromptCancelledError) break;
+        throw error;
+      }
+
+      if (promptLoopCancelled) break;
+      await delay(600);
+
+      const screenshotBase64 = await captureScreenBase64();
+      const response = await window.geminiChat.step({
+        goal,
+        lastAction: currentStep.description || currentStep.label || "",
+        screenshotBase64,
       });
-      await delay(1200);
-      continue;
+
+      const nextPlan = Array.isArray(response?.plan) ? response.plan : [];
+      currentStep = nextPlan[0] ?? null;
+      stepNumber += 1;
     }
-
-    if (step.action === "highlight") {
-      const centerX = step.x + Math.round(step.w / 2);
-      const centerY = step.y + Math.round(step.h / 2);
-
-      await window.aiTools.moveCursor({
-        x: centerX,
-        y: centerY,
-        label: step.label,
-        animate: true,
-        duration: 350,
-        ...stepMeta,
-      });
-      await window.aiTools.highlightRect({
-        x: step.x,
-        y: step.y,
-        width: step.w,
-        height: step.h,
-        duration: 5000,
-      });
-      await delay(900);
-    }
+  } finally {
+    resetPromptLoopState();
+    await window.aiTools.hideNextButton();
+    await window.aiTools.clearHighlights();
+    await delay(600);
+    await window.aiTools.setCursorVisible(false);
   }
-
-  await window.aiTools.setCursorVisible(false);
 }
 
 async function handleAiCommand(text) {
@@ -556,7 +676,9 @@ async function handleAiCommand(text) {
     }
 
     speakExplanation(explanation);
-    await executeGeminiPlan(plan);
+
+    const firstStep = plan[0] ?? null;
+    await executeHybridLoop(text, firstStep);
 
     return {
       text: explanation,
@@ -608,6 +730,13 @@ async function runCommand(text) {
   if (command === "/clear") {
     await window.aiTools.clearHighlights();
     return "Cleared highlights.";
+  }
+
+  if (command === "/cancel") {
+    if (cancelPrompt()) {
+      return "Cancelled guided prompt.";
+    }
+    return "No active prompt to cancel.";
   }
 
   const { audioCapture, screenCapture } = getCaptureServices();
