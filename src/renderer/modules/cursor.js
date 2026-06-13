@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { announceAccessibilityMessage } from "./accessibility.js";
 
 const DEFAULTS = {
   x: window.innerWidth / 2,
@@ -121,6 +122,7 @@ export function initVirtualCursor() {
     }
 
     if (payload.label && state.visible) {
+      announceAccessibilityMessage(payload.label);
       const revealDelay = payload.animate
         ? Number(payload.duration ?? DEFAULTS.duration)
         : 0;

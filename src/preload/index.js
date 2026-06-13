@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld("dashboard", {
   showChat: () => ipcRenderer.invoke("show-chat"),
   quitApp: () => ipcRenderer.invoke("quit-app"),
   getDisplays: () => ipcRenderer.invoke("get-displays"),
+  getAccessibilityPreferences: () =>
+    ipcRenderer.invoke("accessibility:get-preferences"),
+  setAccessibilityPreferences: (preferences) =>
+    ipcRenderer.invoke("accessibility:set-preferences", preferences),
   minimizeWindow: () => ipcRenderer.invoke("minimize-window"),
   closeWindow: () => ipcRenderer.invoke("close-window"),
   minimizeDashboard: () => ipcRenderer.invoke("minimize-window"),
@@ -46,10 +50,18 @@ contextBridge.exposeInMainWorld("dashboard", {
     ipcRenderer.on("overlay-state-changed", handler);
     return () => ipcRenderer.removeListener("overlay-state-changed", handler);
   },
+  onAccessibilityPreferencesChanged: (callback) => {
+    const handler = (_event, preferences) => callback(preferences);
+    ipcRenderer.on("accessibility-preferences-changed", handler);
+    return () =>
+      ipcRenderer.removeListener("accessibility-preferences-changed", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("aiTools", {
   ensureOverlay: () => ipcRenderer.invoke("show-overlay"),
+  getAccessibilityPreferences: () =>
+    ipcRenderer.invoke("accessibility:get-preferences"),
   moveCursor: (payload) => ipcRenderer.invoke("ai-tools:cursor-move", payload),
   setCursorVisible: (visible) =>
     ipcRenderer.invoke("ai-tools:cursor-set-visible", visible),
@@ -89,5 +101,11 @@ contextBridge.exposeInMainWorld("aiTools", {
     const handler = () => callback();
     ipcRenderer.on("ai:highlighter:clear", handler);
     return () => ipcRenderer.removeListener("ai:highlighter:clear", handler);
+  },
+  onAccessibilityPreferencesChanged: (callback) => {
+    const handler = (_event, preferences) => callback(preferences);
+    ipcRenderer.on("accessibility:preferences-changed", handler);
+    return () =>
+      ipcRenderer.removeListener("accessibility:preferences-changed", handler);
   },
 });

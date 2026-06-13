@@ -13,6 +13,14 @@ let overlayWindows = [];
 let chatWindow = null;
 let miniChatWindow = null;
 let dashboardWindow = null;
+let overlayAccessibilityPreferences = {
+  largeText: false,
+  audio: false,
+  magnify: false,
+  screenReader: false,
+  voiceControl: false,
+  highContrast: false,
+};
 
 function getOverlayWindows() {
   return overlayWindows.filter((win) => win && !win.isDestroyed());
@@ -78,7 +86,12 @@ function createOverlayWindowForDisplay(display) {
   overlayWin.displayId = display.id;
   overlayWin.displayBounds = { ...display.bounds };
 
+  overlayWin.webContents.once("did-finish-load", () => {
+    broadcastOverlayAccessibilityPreferences();
+  });
+
   overlayWin.once("ready-to-show", () => {
+    broadcastOverlayAccessibilityPreferences();
     overlayWin.showInactive();
   });
 
@@ -334,6 +347,48 @@ function sendToRenderer(channel, payload) {
   }
 }
 
+function hasEnabledAccessibilityPreference(preferences = overlayAccessibilityPreferences) {
+  return Object.values(preferences).some(Boolean);
+}
+
+function broadcastOverlayAccessibilityPreferences() {
+  const payload = { ...overlayAccessibilityPreferences };
+  const script = `window.dispatchEvent(new CustomEvent("overlay-accessibility-preferences", { detail: ${JSON.stringify(payload)} }));`;
+
+  for (const win of getOverlayWindows()) {
+    if (win.isDestroyed()) continue;
+
+    win.webContents.send("accessibility:preferences-changed", payload);
+
+    if (!win.webContents.isLoading()) {
+      win.webContents.executeJavaScript(script, true).catch(() => {});
+    }
+  }
+}
+
+function setOverlayAccessibilityPreferences(preferences = {}) {
+  overlayAccessibilityPreferences = {
+    ...overlayAccessibilityPreferences,
+    largeText: Boolean(preferences.largeText),
+    audio: Boolean(preferences.audio),
+    magnify: Boolean(preferences.magnify),
+    screenReader: Boolean(preferences.screenReader),
+    voiceControl: Boolean(preferences.voiceControl),
+    highContrast: Boolean(preferences.highContrast),
+  };
+
+  if (hasEnabledAccessibilityPreference()) {
+    showOverlay();
+  }
+
+  broadcastOverlayAccessibilityPreferences();
+  return { ...overlayAccessibilityPreferences };
+}
+
+function getOverlayAccessibilityPreferences() {
+  return { ...overlayAccessibilityPreferences };
+}
+
 function findDisplayForPoint(x, y) {
   return screen.getAllDisplays().find((display) => {
     const bounds = display.bounds;
@@ -391,9 +446,12 @@ function showOverlay() {
   const updatedWins = getOverlayWindows();
   for (const win of updatedWins) {
     if (!win.isDestroyed()) {
+      win.setAlwaysOnTop(true, "screen-saver", 1);
       win.showInactive();
+      win.moveTop?.();
     }
   }
+  broadcastOverlayAccessibilityPreferences();
 }
 
 function hideOverlay() {
@@ -463,6 +521,8 @@ module.exports = {
   toggleChatWindow,
   sendToRenderer,
   sendOverlayPointAction,
+  setOverlayAccessibilityPreferences,
+  getOverlayAccessibilityPreferences,
   DASHBOARD_ENABLED,
   createDashboardWindow,
   getDashboardWindow,

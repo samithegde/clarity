@@ -584,49 +584,49 @@
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">Large Text</div>
-                                <div class="toggle-switch" id="largeTextToggle" onclick="toggleAccessibilityFeature('largeText', event)"></div>
+                                <div class="toggle-switch" id="largeTextToggle" onclick="toggleAccessibilityFeature('largeText', this)"></div>
                             </div>
-                            <div class="card-description">Increase font sizes across the interface for better readability</div>
+                            <div class="card-description">Increase overlay guidance text for better readability</div>
                         </div>
 
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">Audio</div>
-                                <div class="toggle-switch" id="audioToggle" onclick="toggleAccessibilityFeature('audio', event)"></div>
+                                <div class="toggle-switch" id="audioToggle" onclick="toggleAccessibilityFeature('audio', this)"></div>
                             </div>
-                            <div class="card-description">Enable audio feedback and alerts for important actions</div>
+                            <div class="card-description">Enable overlay audio feedback for guidance and highlights</div>
                         </div>
 
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">Magnify/Zoom</div>
-                                <div class="toggle-switch" id="magnifyToggle" onclick="toggleAccessibilityFeature('magnify', event)"></div>
+                                <div class="toggle-switch" id="magnifyToggle" onclick="toggleAccessibilityFeature('magnify', this)"></div>
                             </div>
-                            <div class="card-description">Enable screen magnification and zoom controls</div>
+                            <div class="card-description">Show an overlay magnifier lens and larger guidance markers</div>
                         </div>
 
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">Screen Reader</div>
-                                <div class="toggle-switch" id="screenReaderToggle" onclick="toggleAccessibilityFeature('screenReader', event)"></div>
+                                <div class="toggle-switch" id="screenReaderToggle" onclick="toggleAccessibilityFeature('screenReader', this)"></div>
                             </div>
-                            <div class="card-description">Enable screen reader support for text-to-speech navigation</div>
+                            <div class="card-description">Speak overlay guidance with text-to-speech</div>
                         </div>
 
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">Voice Control</div>
-                                <div class="toggle-switch" id="voiceControlToggle" onclick="toggleAccessibilityFeature('voiceControl', event)"></div>
+                                <div class="toggle-switch" id="voiceControlToggle" onclick="toggleAccessibilityFeature('voiceControl', this)"></div>
                             </div>
-                            <div class="card-description">Enable voice commands to control the application</div>
+                            <div class="card-description">Enable voice commands for overlay cursor and highlights</div>
                         </div>
 
                         <div class="card">
                             <div class="card-header">
                                 <div class="card-title">High Contrast Mode</div>
-                                <div class="toggle-switch" id="highContrastToggle" onclick="toggleAccessibilityFeature('highContrast', event)"></div>
+                                <div class="toggle-switch" id="highContrastToggle" onclick="toggleAccessibilityFeature('highContrast', this)"></div>
                             </div>
-                            <div class="card-description">Enable high contrast display for better visibility</div>
+                            <div class="card-description">Add a high contrast overlay layer for better visibility</div>
                         </div>
                     </div>
                 </div>
@@ -720,9 +720,14 @@
                         `).join('');
                     document.getElementById('displayList').innerHTML = html;
                     document.getElementById('displayListDetailed').innerHTML = html;
+                } else {
+                    document.getElementById('displayList').innerHTML = '<div class="display-item">No displays detected</div>';
+                    document.getElementById('displayListDetailed').innerHTML = '<div class="display-item">No displays detected</div>';
                 }
             } catch (error) {
                 console.error('Error getting displays:', error);
+                document.getElementById('displayCount').textContent = 'Display details unavailable';
+                document.getElementById('displayCountDetailed').textContent = 'Display details unavailable';
             }
         }
 
@@ -753,10 +758,60 @@
             dashboardApi.showChat();
         }
 
-        function toggleAccessibilityFeature(feature, event) {
-            event.target.closest('.toggle-switch').classList.toggle('active');
-            // TODO: Implement actual accessibility feature toggles
-            console.log(`${feature} toggled`);
+        function toggleAccessibilityFeature(feature, toggle) {
+            toggle.classList.toggle('active');
+            saveAccessibilityPreferences();
+        }
+
+        function getAccessibilityPreferencesFromUI() {
+            const features = ['largeText', 'audio', 'magnify', 'screenReader', 'voiceControl', 'highContrast'];
+            return features.reduce((preferences, feature) => {
+                preferences[feature] = document
+                    .getElementById(`${feature}Toggle`)
+                    ?.classList.contains('active') ?? false;
+                return preferences;
+            }, {});
+        }
+
+        function renderAccessibilityPreferences(preferences = {}) {
+            const features = ['largeText', 'audio', 'magnify', 'screenReader', 'voiceControl', 'highContrast'];
+
+            features.forEach((feature) => {
+                const toggle = document.getElementById(`${feature}Toggle`);
+                const enabled = Boolean(preferences[feature]);
+                toggle?.classList.toggle('active', enabled);
+            });
+        }
+
+        async function saveAccessibilityPreferences() {
+            const preferences = getAccessibilityPreferencesFromUI();
+            localStorage.setItem('accessibility:preferences', JSON.stringify(preferences));
+            try {
+                await dashboardApi.setAccessibilityPreferences(preferences);
+            } catch (error) {
+                console.error('Error saving accessibility preferences:', error);
+                showError('Failed to update overlay accessibility');
+            }
+        }
+
+        async function loadAccessibilityPreferences() {
+            const saved = localStorage.getItem('accessibility:preferences');
+            let localPreferences = {};
+            try {
+                localPreferences = saved ? JSON.parse(saved) : {};
+            } catch {
+                localStorage.removeItem('accessibility:preferences');
+            }
+            renderAccessibilityPreferences(localPreferences);
+
+            try {
+                const current = await dashboardApi.getAccessibilityPreferences();
+                const preferences = { ...current, ...localPreferences };
+                renderAccessibilityPreferences(preferences);
+                await dashboardApi.setAccessibilityPreferences(preferences);
+            } catch (error) {
+                console.error('Error loading accessibility preferences:', error);
+            }
         }
 
         function showSettings() {
@@ -783,7 +838,13 @@
             updateUI();
         });
 
+        dashboardApi.onAccessibilityPreferencesChanged?.((preferences) => {
+            renderAccessibilityPreferences(preferences);
+            localStorage.setItem('accessibility:preferences', JSON.stringify(preferences));
+        });
+
         // Initial load
+        loadAccessibilityPreferences();
         updateStatus();
         updateDisplayInfo();
         setInterval(updateDisplayInfo, 3000);
