@@ -440,6 +440,10 @@
                 <span class="nav-icon">💬</span>
                 Chat
             </div>
+            <div class="nav-item" onclick="switchPage('accessibility')">
+                <span class="nav-icon">♿</span>
+                Accessibility
+            </div>
             <div style="flex: 1;"></div>
             <div class="nav-item" onclick="showSettings()">
                 <span class="nav-icon">⚙️</span>
@@ -571,6 +575,62 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Accessibility Page -->
+            <div id="page-accessibility" style="display: none;">
+                <div class="section">
+                    <div class="section-title">Accessibility Settings</div>
+                    <div class="cards-grid">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Large Text</div>
+                                <div class="toggle-switch" id="largeTextToggle" onclick="toggleAccessibilityFeature('largeText', event)"></div>
+                            </div>
+                            <div class="card-description">Increase font sizes across the interface for better readability</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Audio</div>
+                                <div class="toggle-switch" id="audioToggle" onclick="toggleAccessibilityFeature('audio', event)"></div>
+                            </div>
+                            <div class="card-description">Enable audio feedback and alerts for important actions</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Magnify/Zoom</div>
+                                <div class="toggle-switch" id="magnifyToggle" onclick="toggleAccessibilityFeature('magnify', event)"></div>
+                            </div>
+                            <div class="card-description">Enable screen magnification and zoom controls</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Screen Reader</div>
+                                <div class="toggle-switch" id="screenReaderToggle" onclick="toggleAccessibilityFeature('screenReader', event)"></div>
+                            </div>
+                            <div class="card-description">Enable screen reader support for text-to-speech navigation</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Voice Control</div>
+                                <div class="toggle-switch" id="voiceControlToggle" onclick="toggleAccessibilityFeature('voiceControl', event)"></div>
+                            </div>
+                            <div class="card-description">Enable voice commands to control the application</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">High Contrast Mode</div>
+                                <div class="toggle-switch" id="highContrastToggle" onclick="toggleAccessibilityFeature('highContrast', event)"></div>
+                            </div>
+                            <div class="card-description">Enable high contrast display for better visibility</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -590,7 +650,8 @@
                 dashboard: 'Dashboard',
                 overlay: 'Overlay Controls',
                 displays: 'Displays',
-                chat: 'Chat Assistant'
+                chat: 'Chat Assistant',
+                accessibility: 'Accessibility Settings'
             };
             document.getElementById('pageTitle').textContent = titles[page];
             
@@ -690,6 +751,12 @@
 
         function showChat() {
             dashboardApi.showChat();
+        }
+
+        function toggleAccessibilityFeature(feature, event) {
+            event.target.closest('.toggle-switch').classList.toggle('active');
+            // TODO: Implement actual accessibility feature toggles
+            console.log(`${feature} toggled`);
         }
 
         function showSettings() {
