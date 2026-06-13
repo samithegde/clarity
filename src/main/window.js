@@ -75,12 +75,47 @@ function applyMiniChatShape(win) {
   win.setShape(createMiniChatCircleShape(MINI_CHAT_SIZE, WIN32_CAPTION_INSET));
 }
 
+function getOverlayBoundsForDisplay(display) {
+  const { x, y, width, height } = display.bounds;
+  if (!WIN32_CAPTION_INSET) {
+    return { x, y, width, height };
+  }
+  return {
+    x,
+    y: y - WIN32_CAPTION_INSET,
+    width,
+    height: height + WIN32_CAPTION_INSET,
+  };
+}
+
+async function applyOverlayWindowChrome(win) {
+  if (!win || win.isDestroyed()) return;
+  win.setTitle("");
+  await hideNativeTitleBar(win);
+}
+
+async function showOverlayWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  await applyOverlayWindowChrome(win);
+  if (!win.isVisible()) {
+    win.showInactive();
+    await applyOverlayWindowChrome(win);
+  }
+  keepWindowOffTaskbar(win);
+}
+
+function hideOverlayWindowsOnly() {
+  for (const win of getOverlayWindows()) {
+    if (!win.isDestroyed() && win.isVisible()) {
+      win.hide();
+    }
+  }
+}
+
 function createOverlayWindowForDisplay(display) {
+  const overlayBounds = getOverlayBoundsForDisplay(display);
   const overlayWin = new BrowserWindow({
-    x: display.bounds.x,
-    y: display.bounds.y,
-    width: display.bounds.width,
-    height: display.bounds.height,
+    ...overlayBounds,
     show: false,
     frame: false,
     transparent: true,
@@ -116,9 +151,16 @@ function createOverlayWindowForDisplay(display) {
   overlayWin.displayId = display.id;
   overlayWin.displayBounds = { ...display.bounds };
 
+  overlayWin.webContents.on("page-title-updated", (event) => {
+    event.preventDefault();
+  });
+
+  overlayWin.on("show", () => {
+    applyOverlayWindowChrome(overlayWin);
+  });
+
   overlayWin.once("ready-to-show", async () => {
-    await hideNativeTitleBar(overlayWin);
-    overlayWin.showInactive();
+    await applyOverlayWindowChrome(overlayWin);
   });
 
   return overlayWin;
@@ -403,10 +445,15 @@ function toDisplayLocalCoords(bounds, payload) {
   const local = { ...payload };
   if (Number.isFinite(local.x)) local.x -= bounds.x;
   if (Number.isFinite(local.y)) local.y -= bounds.y;
+  if (WIN32_CAPTION_INSET && Number.isFinite(local.y)) {
+    local.y += WIN32_CAPTION_INSET;
+  }
   return local;
 }
 
-function sendOverlayPointAction(channel, payload = {}) {
+async function sendOverlayPointAction(channel, payload = {}) {
+  await showOverlay();
+
   const x = Number(payload.x);
   const y = Number(payload.y);
 
@@ -429,6 +476,7 @@ function setOverlaysInteractive(interactive) {
   for (const win of getOverlayWindows()) {
     if (!win.isDestroyed()) {
       win.setIgnoreMouseEvents(!interactive, { forward: !interactive });
+      applyOverlayWindowChrome(win);
     }
   }
 }
@@ -448,16 +496,12 @@ function notifyDashboard(channel, payload) {
   }
 }
 
-function showOverlay() {
-  const wins = getOverlayWindows();
-  if (wins.length === 0) {
+async function showOverlay() {
+  if (getOverlayWindows().length === 0) {
     createOverlayWindows();
   }
-  const updatedWins = getOverlayWindows();
-  for (const win of updatedWins) {
-    if (!win.isDestroyed()) {
-      win.showInactive();
-    }
+  for (const win of getOverlayWindows()) {
+    await showOverlayWindow(win);
   }
 }
 
@@ -481,7 +525,7 @@ function handleDisplayChange() {
 
 function createWindows() {
   createChatWindow();
-  showOverlay();
+  createOverlayWindows();
 
   screen.on("display-added", handleDisplayChange);
   screen.on("display-removed", handleDisplayChange);
@@ -539,6 +583,7 @@ module.exports = {
   notifyDashboard,
   showOverlay,
   hideOverlay,
+  hideOverlayWindowsOnly,
   minimizeDashboard,
   closeDashboard,
 };

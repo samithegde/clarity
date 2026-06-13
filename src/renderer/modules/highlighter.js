@@ -72,7 +72,7 @@ export function initHighlighter() {
       fill: payload.fill ?? DEFAULT_COLOR,
       stroke: payload.stroke ?? DEFAULT_BORDER,
       lineWidth: payload.lineWidth ?? 3,
-      duration: payload.duration ?? 5000,
+      duration: payload.duration ?? 0,
     });
   });
 
@@ -85,7 +85,7 @@ export function initHighlighter() {
       fill: payload.fill ?? DEFAULT_COLOR,
       stroke: payload.stroke ?? DEFAULT_BORDER,
       lineWidth: payload.lineWidth ?? 3,
-      duration: payload.duration ?? 5000,
+      duration: payload.duration ?? 0,
     });
   });
 
@@ -95,7 +95,7 @@ export function initHighlighter() {
       points: payload.points ?? [],
       stroke: payload.stroke ?? DEFAULT_BORDER,
       lineWidth: payload.lineWidth ?? DEFAULT_STROKE_WIDTH,
-      duration: payload.duration ?? 5000,
+      duration: payload.duration ?? 0,
     });
   });
 

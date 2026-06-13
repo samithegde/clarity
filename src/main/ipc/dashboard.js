@@ -28,8 +28,8 @@ function registerDashboardIpc(ipcMain) {
     return { active: overlayVisible };
   });
 
-  ipcMain.handle("show-overlay", () => {
-    showOverlay();
+  ipcMain.handle("show-overlay", async () => {
+    await showOverlay();
     overlayVisible = true;
     notifyDashboard("overlay-state-changed", { active: true });
     return { ok: true };

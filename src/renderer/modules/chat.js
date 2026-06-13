@@ -603,12 +603,12 @@ async function executeSingleStep(step, stepMeta) {
       duration: 350,
       ...stepMeta,
     });
+    await window.aiTools.clearHighlights();
     await window.aiTools.highlightRect({
       x: step.x,
       y: step.y,
       width: step.w,
       height: step.h,
-      duration: 5000,
     });
   }
 }
@@ -722,7 +722,7 @@ async function runCommand(text) {
     const height = Number(parts[4]);
     if ([x, y, width, height].every(Number.isFinite)) {
       await window.aiTools.ensureOverlay?.();
-      await window.aiTools.highlightRect({ x, y, width, height, duration: 5000 });
+      await window.aiTools.highlightRect({ x, y, width, height });
       return "Added highlight.";
     }
   }

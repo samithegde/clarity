@@ -18,6 +18,10 @@ export function initVirtualCursor() {
   const widgetText = document.getElementById("ai-step-widget-text");
   if (!cursor) return;
 
+  const promptControls = document.getElementById("ai-prompt-controls");
+  const nextBtn = document.getElementById("ai-next-btn");
+  const cancelBtn = document.getElementById("ai-cancel-btn");
+
   let state = { ...DEFAULTS };
   let revealTimer = null;
 
@@ -53,8 +57,12 @@ export function initVirtualCursor() {
   function positionStepWidget(x, y) {
     if (!widget) return;
 
+    const controlsVisible =
+      promptControls && !promptControls.classList.contains("hidden");
     const placeLeft = x + WIDGET_WIDTH_ESTIMATE + 40 > window.innerWidth;
-    const placeAbove = y + WIDGET_HEIGHT_ESTIMATE + 40 > window.innerHeight;
+    const placeAbove =
+      controlsVisible ||
+      y + WIDGET_HEIGHT_ESTIMATE + 40 > window.innerHeight;
 
     widget.classList.toggle("is-left", placeLeft);
     widget.classList.toggle("is-above", placeAbove);
@@ -146,19 +154,21 @@ export function initVirtualCursor() {
     if (!visible) hideStepWidget();
   });
 
-  const promptControls = document.getElementById("ai-prompt-controls");
-  const nextBtn = document.getElementById("ai-next-btn");
-  const cancelBtn = document.getElementById("ai-cancel-btn");
-
   if (promptControls && nextBtn) {
     window.aiTools?.onNextButtonShow(() => {
       promptControls.style.left = `${state.x - 40}px`;
       promptControls.style.top = `${state.y + 28}px`;
       promptControls.classList.remove("hidden");
+      if (widget && !widget.classList.contains("hidden")) {
+        positionStepWidget(state.x, state.y);
+      }
     });
 
     window.aiTools?.onNextButtonHide(() => {
       promptControls.classList.add("hidden");
+      if (widget && !widget.classList.contains("hidden")) {
+        positionStepWidget(state.x, state.y);
+      }
     });
 
     nextBtn.addEventListener("click", () => {
