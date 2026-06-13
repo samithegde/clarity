@@ -1,6 +1,7 @@
 const { BrowserWindow, screen } = require("electron");
 const path = require("path");
 const { getWorkAreaBounds } = require("./utils/display");
+const { hideNativeTitleBar } = require("./utils/win32-chrome");
 
 const CHAT_WIDTH = 420;
 const CHAT_HEIGHT = 650;
@@ -92,13 +93,19 @@ function createOverlayWindowForDisplay(display) {
     resizable: false,
     autoHideMenuBar: true,
     backgroundColor: "#00000000",
-    ...(process.platform === "win32" ? { type: "toolbar", thickFrame: false } : {}),
+    ...(process.platform === "win32"
+      ? { thickFrame: false, backgroundMaterial: "none" }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  overlayWin.setMenu(null);
+  overlayWin.setMenuBarVisibility(false);
+  overlayWin.setTitle("");
 
   keepWindowOffTaskbar(overlayWin);
   overlayWin.setAlwaysOnTop(true, "screen-saver");
@@ -109,7 +116,8 @@ function createOverlayWindowForDisplay(display) {
   overlayWin.displayId = display.id;
   overlayWin.displayBounds = { ...display.bounds };
 
-  overlayWin.once("ready-to-show", () => {
+  overlayWin.once("ready-to-show", async () => {
+    await hideNativeTitleBar(overlayWin);
     overlayWin.showInactive();
   });
 
