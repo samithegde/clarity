@@ -6,6 +6,7 @@ const { registerWhisperIpc } = require("./whisper");
 const { registerWindowIpc } = require("./window");
 const { registerDashboardIpc } = require("./dashboard");
 const { registerElevenLabsIpc } = require("./elevenlabs");
+const { registerRagIpc } = require("./rag");
 
 function registerIpcHandlers(ipcMain) {
   registerAiToolsIpc(ipcMain);
@@ -16,6 +17,7 @@ function registerIpcHandlers(ipcMain) {
   registerWindowIpc(ipcMain);
   registerDashboardIpc(ipcMain);
   registerElevenLabsIpc(ipcMain);
+  registerRagIpc(ipcMain);
 }
 
 module.exports = { registerIpcHandlers };

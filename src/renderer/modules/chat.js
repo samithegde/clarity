@@ -13,23 +13,31 @@ const INLINE_MIME_PREFIXES = ["image/", "audio/", "video/"];
 const INLINE_MIME_TYPES = new Set(["application/pdf"]);
 const CHAT_CONVERSATION_STORAGE_KEY = "clarity:chat-conversation-id";
 
-const messages = [
-  {
-    text: "Hey there! I'm your Clarity AI. Ready to help you understand your screen, plan next steps, and keep moving.",
-    sender: "system",
-  },
-];
+const DEFAULT_WELCOME_MESSAGE = {
+  text: "Hey there! I'm your Clarity AI. Ready to help you understand your screen, plan next steps, and keep moving.",
+  sender: "system",
+};
+
+const messages = [];
 
 let conversationId = null;
 let mediaRecorder = null;
 let recordingStream = null;
 let recordedChunks = [];
 let isTranscribing = false;
+let isStoppingRecording = false;
+let silenceMonitor = null;
+
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_DURATION_MS = 1200;
+const SILENCE_CHECK_INTERVAL_MS = 100;
 let pendingAttachments = [];
 let currentReaderAudio = null;
 let promptLoopActive = false;
 let promptLoopCancelled = false;
 let resolvePromptWait = null;
+let newChatButton = null;
+let isAiBusy = false;
 
 class PromptCancelledError extends Error {
   constructor() {
@@ -48,6 +56,61 @@ function getConversationId() {
   }
 
   return conversationId;
+}
+
+function resetConversationId() {
+  conversationId = crypto.randomUUID();
+  localStorage.setItem(CHAT_CONVERSATION_STORAGE_KEY, conversationId);
+  return conversationId;
+}
+
+function setNewChatButtonDisabled(disabled) {
+  if (!newChatButton) return;
+  newChatButton.disabled = disabled;
+}
+
+function updateNewChatButtonState() {
+  setNewChatButtonDisabled(isAiBusy || promptLoopActive);
+}
+
+function updateSyncStatus(state) {
+  const syncStatusEl = document.getElementById("chat-sync-status");
+  const syncStatusDot = document.querySelector(".chat-status-dot");
+  if (!syncStatusEl || !syncStatusDot) return;
+
+  syncStatusDot.classList.remove("chat-status-dot--synced", "chat-status-dot--local");
+
+  if (state === "checking") {
+    syncStatusEl.textContent = "Checking sync…";
+    return;
+  }
+
+  if (state === "local") {
+    syncStatusEl.textContent = "Local only";
+    syncStatusDot.classList.add("chat-status-dot--local");
+    return;
+  }
+
+  if (state === "synced") {
+    syncStatusEl.textContent = "Synced";
+    syncStatusDot.classList.add("chat-status-dot--synced");
+  }
+}
+
+async function refreshSyncStatus() {
+  if (!window.chatHistory?.status) {
+    updateSyncStatus("local");
+    return;
+  }
+
+  updateSyncStatus("checking");
+
+  try {
+    const status = await window.chatHistory.status();
+    updateSyncStatus(status?.connected ? "synced" : "local");
+  } catch {
+    updateSyncStatus("local");
+  }
 }
 
 function createMessage(message) {
@@ -82,19 +145,20 @@ function getPersistableMessage(message) {
   };
 }
 
-async function loadChatHistory(messagesEl, typingIndicator) {
-  if (!window.chatHistory?.list) return;
+async function loadChatHistory() {
+  if (!window.chatHistory?.list) return false;
 
   try {
     const storedMessages = await window.chatHistory.list({
       conversationId: getConversationId(),
     });
-    if (!Array.isArray(storedMessages) || !storedMessages.length) return;
+    if (!Array.isArray(storedMessages) || !storedMessages.length) return false;
 
     messages.splice(0, messages.length, ...storedMessages.map(hydrateStoredMessage));
-    renderMessages(messagesEl, typingIndicator);
+    return true;
   } catch (error) {
     console.warn("Failed to load MongoDB chat history:", error);
+    return false;
   }
 }
 
@@ -108,7 +172,38 @@ async function saveChatMessage(message) {
     });
   } catch (error) {
     console.warn("Failed to save MongoDB chat history:", error);
+    updateSyncStatus("local");
   }
+}
+
+async function bootstrapChat(messagesEl, typingIndicator) {
+  updateSyncStatus("checking");
+
+  const loaded = await loadChatHistory();
+  if (!loaded) {
+    messages.splice(0, messages.length, { ...DEFAULT_WELCOME_MESSAGE });
+  }
+
+  renderMessages(messagesEl, typingIndicator);
+  await refreshSyncStatus();
+}
+
+async function startNewChat(messagesEl, typingIndicator) {
+  cancelPrompt();
+
+  const previousConversationId = getConversationId();
+
+  if (window.chatHistory?.clear) {
+    try {
+      await window.chatHistory.clear({ conversationId: previousConversationId });
+    } catch (error) {
+      console.warn("Failed to clear MongoDB chat history:", error);
+    }
+  }
+
+  resetConversationId();
+  messages.splice(0, messages.length, { ...DEFAULT_WELCOME_MESSAGE });
+  renderMessages(messagesEl, typingIndicator);
 }
 
 export function cancelPrompt() {
@@ -124,12 +219,14 @@ function beginPromptLoop() {
   promptLoopActive = true;
   promptLoopCancelled = false;
   resolvePromptWait = null;
+  updateNewChatButtonState();
 }
 
 function resetPromptLoopState() {
   promptLoopActive = false;
   promptLoopCancelled = false;
   resolvePromptWait = null;
+  updateNewChatButtonState();
 }
 
 function formatFileSize(bytes) {
@@ -497,7 +594,64 @@ function resampleLinear(samples, fromRate, toRate) {
   return output;
 }
 
-async function startMicRecording(messagesEl, typingIndicator, micButton) {
+function stopSilenceMonitor() {
+  if (!silenceMonitor) return;
+
+  clearInterval(silenceMonitor.intervalId);
+  silenceMonitor.source?.disconnect();
+  silenceMonitor.audioContext?.close().catch(() => {});
+  silenceMonitor = null;
+}
+
+function startSilenceMonitor(stream, onSilence) {
+  stopSilenceMonitor();
+
+  const audioContext = new AudioContext();
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+
+  const source = audioContext.createMediaStreamSource(stream);
+  source.connect(analyser);
+
+  const samples = new Uint8Array(analyser.fftSize);
+  let hasSpoken = false;
+  let silenceStart = null;
+
+  const intervalId = setInterval(() => {
+    analyser.getByteTimeDomainData(samples);
+
+    let sumSquares = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const normalized = (samples[i] - 128) / 128;
+      sumSquares += normalized * normalized;
+    }
+
+    const rms = Math.sqrt(sumSquares / samples.length);
+    const isSilent = rms < SILENCE_THRESHOLD;
+
+    if (!isSilent) {
+      hasSpoken = true;
+      silenceStart = null;
+      return;
+    }
+
+    if (!hasSpoken) return;
+
+    if (!silenceStart) {
+      silenceStart = Date.now();
+      return;
+    }
+
+    if (Date.now() - silenceStart >= SILENCE_DURATION_MS) {
+      stopSilenceMonitor();
+      onSilence();
+    }
+  }, SILENCE_CHECK_INTERVAL_MS);
+
+  silenceMonitor = { audioContext, source, intervalId };
+}
+
+async function startMicRecording(messagesEl, typingIndicator, chatInput, micButton) {
   if (mediaRecorder || isTranscribing) return;
 
   recordingStream = await navigator.mediaDevices.getUserMedia({
@@ -519,11 +673,25 @@ async function startMicRecording(messagesEl, typingIndicator, micButton) {
 
   mediaRecorder.start();
   setMicButtonState(micButton, "recording");
-  pushSystemMessage(messagesEl, typingIndicator, "Listening... click Stop when finished.");
+  pushSystemMessage(
+    messagesEl,
+    typingIndicator,
+    "Listening... stops automatically after 2 seconds of silence."
+  );
+
+  startSilenceMonitor(recordingStream, () => {
+    stopMicRecording(messagesEl, typingIndicator, chatInput, micButton).catch((error) => {
+      setMicButtonState(micButton, "idle");
+      pushSystemMessage(messagesEl, typingIndicator, `Microphone error: ${error.message}`);
+    });
+  });
 }
 
 async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButton) {
-  if (!mediaRecorder) return;
+  if (!mediaRecorder || isStoppingRecording) return;
+
+  isStoppingRecording = true;
+  stopSilenceMonitor();
 
   isTranscribing = true;
   setMicButtonState(micButton, "transcribing");
@@ -545,8 +713,9 @@ async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButto
   recordedChunks = [];
 
   if (audioBlob.size === 0) {
-    setMicButtonState(micButton, "idle");
     isTranscribing = false;
+    isStoppingRecording = false;
+    setMicButtonState(micButton, "idle");
     pushSystemMessage(messagesEl, typingIndicator, "No audio captured.");
     return;
   }
@@ -580,6 +749,7 @@ async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButto
     pushSystemMessage(messagesEl, typingIndicator, `Transcription failed: ${error.message}`);
   } finally {
     isTranscribing = false;
+    isStoppingRecording = false;
     setMicButtonState(micButton, "idle");
     chatInput.focus();
   }
@@ -798,8 +968,14 @@ async function handleAiCommand(text) {
     const firstStep = plan[0] ?? null;
     await executeHybridLoop(text, firstStep);
 
+    const retrieval = response?.retrieval;
+    const sourceNote =
+      retrieval?.sources?.length
+        ? `\n\n*Sources: ${retrieval.sources.join(", ")}*`
+        : "";
+
     return {
-      text: explanation,
+      text: explanation + sourceNote,
       plan,
       rawResponse: response?.text || JSON.stringify({ explanation, plan }),
     };
@@ -971,9 +1147,10 @@ export function initChat() {
   const minimizeButton = document.getElementById("minimize-button");
   const typingIndicator = document.getElementById("typing-indicator");
 
-  renderMessages(messagesEl, typingIndicator);
+  newChatButton = document.getElementById("new-chat-button");
+
   initChatResizeGrip();
-  loadChatHistory(messagesEl, typingIndicator);
+  void bootstrapChat(messagesEl, typingIndicator);
 
   chatInput.addEventListener("mousedown", () => {
     chatInput.focus();
@@ -981,6 +1158,11 @@ export function initChat() {
 
   closeButton?.addEventListener("click", hideChatWindow);
   minimizeButton?.addEventListener("click", minimizeChatWindow);
+
+  newChatButton?.addEventListener("click", () => {
+    if (isAiBusy || promptLoopActive) return;
+    void startNewChat(messagesEl, typingIndicator);
+  });
 
   attachButton?.addEventListener("click", () => {
     fileInput?.click();
@@ -1069,7 +1251,16 @@ export function initChat() {
     saveChatMessage(userMessage);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
-    const aiReply = await handleAiCommand(text);
+    isAiBusy = true;
+    updateNewChatButtonState();
+
+    let aiReply;
+    try {
+      aiReply = await handleAiCommand(text);
+    } finally {
+      isAiBusy = false;
+      updateNewChatButtonState();
+    }
 
     hideTypingIndicator(typingIndicator);
 
@@ -1093,7 +1284,7 @@ export function initChat() {
       if (mediaRecorder) {
         await stopMicRecording(messagesEl, typingIndicator, chatInput, micButton);
       } else {
-        await startMicRecording(messagesEl, typingIndicator, micButton);
+        await startMicRecording(messagesEl, typingIndicator, chatInput, micButton);
       }
     } catch (error) {
       setMicButtonState(micButton, "idle");

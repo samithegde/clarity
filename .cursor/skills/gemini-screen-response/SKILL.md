@@ -21,7 +21,7 @@ Use this as `generationConfig.responseSchema` with `generationConfig.responseMim
     },
     "plan": {
       "type": "ARRAY",
-      "description": "A set of sequential actions to execute on the screen.",
+      "description": "Ordered on-screen actions. Return [] when no pointer or highlight is needed.",
       "items": {
         "type": "OBJECT",
         "properties": {
@@ -97,9 +97,10 @@ Coordinates are absolute display pixels matching the attached screenshot. An emp
 
 Tell the model to:
 
-- Use the attached screenshot to locate UI elements
-- Return pixel-accurate action coordinates for each target
-- Keep `explanation` to one spoken sentence
+- **Default to `plan: []`** — only add actions when the user needs on-screen pointer/highlight guidance (navigation, "show me where", click/find/highlight requests, step-by-step UI walkthroughs)
+- Use `plan: []` for greetings, general Q&A, definitions, summaries, confirmations, and any reply fully understandable from speech alone
+- When `plan` is non-empty, use the attached screenshot to locate UI elements and return pixel-accurate coordinates
+- Keep `explanation` concise; one sentence for guided steps, slightly longer allowed when `plan` is empty
 - Order `plan` steps in the sequence the user should follow
 - Use `cursor` for guidance movement and `highlight` for box emphasis
 - `label` fields may use markdown (`**bold**`, lists, `` `code` ``, links) for the on-screen widget

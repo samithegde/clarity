@@ -6,11 +6,13 @@ const RESPONSE_SCHEMA = {
   properties: {
     explanation: {
       type: "STRING",
-      description: "A clean, concise 1-sentence vocal instruction.",
+      description:
+        "A clean, concise spoken answer. One sentence for guidance; may be longer for general Q&A when plan is empty.",
     },
     plan: {
       type: "ARRAY",
-      description: "A set of sequential actions to execute on the screen.",
+      description:
+        "Ordered on-screen actions. Return [] when no pointer or highlight is needed — most conversational, factual, or status-only replies should use an empty plan.",
       items: {
         type: "OBJECT",
         properties: {
@@ -53,14 +55,50 @@ const RESPONSE_SCHEMA = {
 };
 
 const SYSTEM_PROMPT =
-  "Your name is Clarity. You help users learn by guiding them through what's on their screen." +
-  "Each user message may include a screenshot. Use it to locate UI elements and return pixel-accurate actions." +
-  "Respond only with JSON matching the schema: explanation is one spoken sentence; plan is an ordered list of actions." +
-  "For cursor guidance actions, use action='cursor' with x, y, description only." +
-  "For highlight actions, use action='highlight' with x, y, w, h, description." +
+  "Your name is Clarity. You help users understand and navigate what's on their screen." +
+  "Each user message may include a screenshot for context." +
+  "Respond only with JSON matching the schema: explanation is the spoken reply; plan is an optional ordered list of on-screen actions." +
+  "IMPORTANT: Default to plan=[]. Only add plan items when the user explicitly needs visual guidance — e.g. 'show me where', 'click', 'find', 'highlight', 'how do I open', or a multi-step UI walkthrough." +
+  "Use plan=[] for greetings, general questions, definitions, summaries, confirmations, troubleshooting advice that does not require pointing, and any reply that can be fully understood from speech alone." +
+  "When plan is non-empty, use the screenshot to locate UI elements and return pixel-accurate coordinates." +
+  "For cursor guidance, use action='cursor' with x, y, description only." +
+  "For highlight emphasis, use action='highlight' with x, y, w, h, description." +
   "Each description explains what the pointer is targeting and appears in the on-screen widget beside the cursor." +
-  "Descriptions may use markdown for the widget (bold, lists, inline code)." +
-  "Use an empty plan when no on-screen guidance is needed.";
+  "Descriptions may use markdown for the widget (bold, lists, inline code).";
+
+const PLAN_RETRIEVAL_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    intent: {
+      type: "STRING",
+      description: "Concise statement of what the user wants to accomplish.",
+    },
+    ragQuery: {
+      type: "STRING",
+      description:
+        "Optimized search query for the knowledge base — more specific than the user's words.",
+    },
+    needsOnScreenGuidance: {
+      type: "BOOLEAN",
+      description:
+        "True when the user needs step-by-step UI navigation; false for pure Q&A or conversational replies.",
+    },
+    targetApp: {
+      type: "STRING",
+      description:
+        "The application the user is working in, if identifiable (e.g. 'Google Docs', 'Figma', 'VS Code').",
+    },
+  },
+  required: ["intent", "ragQuery", "needsOnScreenGuidance"],
+};
+
+const PLAN_RETRIEVAL_SYSTEM_PROMPT =
+  "You are an intent parser for a screen-navigation assistant called Clarity. " +
+  "Given the user's latest message and conversation history, produce a JSON object with: " +
+  "intent (concise statement of what the user wants to accomplish), " +
+  "ragQuery (an optimized search query for a how-to knowledge base — rephrase the request as a question), " +
+  "needsOnScreenGuidance (true when the user needs step-by-step UI navigation; false for greetings or pure Q&A), " +
+  "targetApp (the application the user is working in if detectable, otherwise omit).";
 
 function getApiKey() {
   return (
@@ -186,7 +224,23 @@ function parseStructuredResponse(text) {
   };
 }
 
-async function chat(history) {
+function buildRecipeBlock(recipe) {
+  if (!recipe?.chunks?.length) return "";
+
+  const sections = recipe.chunks
+    .map((chunk) => `[Source: ${chunk.source}]\n${chunk.text}`)
+    .join("\n\n---\n\n");
+
+  return (
+    "\n\n[WORKFLOW KNOWLEDGE BASE]\n" +
+    sections +
+    "\n\n[INSTRUCTION] The knowledge base above contains step-by-step recipes. " +
+    "When building your plan, locate the SPECIFIC UI elements named in the recipe (menus, buttons, shortcuts). " +
+    "Follow the recipe steps — do not guess workflow steps not described in the recipe."
+  );
+}
+
+async function chat(history, { recipe } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured. Add it to your .env file.");
@@ -199,6 +253,7 @@ async function chat(history) {
 
   const model = getModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+  const systemPrompt = SYSTEM_PROMPT + buildRecipeBlock(recipe);
 
   const response = await fetch(url, {
     method: "POST",
@@ -208,7 +263,7 @@ async function chat(history) {
     },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
+        parts: [{ text: systemPrompt }],
       },
       contents,
       generationConfig: {
@@ -233,7 +288,15 @@ async function chat(history) {
   }
 
   const structured = parseStructuredResponse(text);
-  return { ...structured, model };
+
+  const retrieval = recipe
+    ? {
+        ragQuery: recipe.ragQuery,
+        sources: [...new Set(recipe.chunks.map((c) => c.source))],
+      }
+    : null;
+
+  return { ...structured, model, retrieval };
 }
 
 const STEP_SYSTEM_PROMPT =
@@ -244,16 +307,21 @@ const STEP_SYSTEM_PROMPT =
   "The explanation field should be a brief internal note (not spoken). " +
   "Never return more than one plan item.";
 
-async function chatStep(goal, lastActionDescription, screenshotBase64) {
+async function chatStep(goal, lastActionDescription, screenshotBase64, { recipe } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured. Add it to your .env file.");
   }
 
-  const userText =
+  let userText =
     `Original goal: ${goal}\n` +
     `Last action completed: ${lastActionDescription}\n` +
     `What is the single next step? Return empty plan if done.`;
+
+  if (recipe?.chunks?.length) {
+    const recipeSummary = recipe.chunks.map((c) => c.text).join("\n\n");
+    userText = `[Workflow recipe]\n${recipeSummary}\n\n${userText}`;
+  }
 
   const contents = [
     {
@@ -306,9 +374,71 @@ async function chatStep(goal, lastActionDescription, screenshotBase64) {
   return { ...structured, model };
 }
 
+async function planRetrieval(userMessage, history) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  // Build a short recent history for context (text-only, no screenshots)
+  const recentContents = history
+    .filter((m) => m.sender === "user" || (m.sender === "system" && m.rawResponse))
+    .slice(-6)
+    .map((m) => ({
+      role: m.sender === "user" ? "user" : "model",
+      parts: [{ text: m.text || "" }],
+    }))
+    .filter((e) => e.parts[0].text);
+
+  const contents = [
+    ...recentContents,
+    { role: "user", parts: [{ text: `Latest user message: ${userMessage}` }] },
+  ];
+
+  const model = getModel();
+  const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: PLAN_RETRIEVAL_SYSTEM_PROMPT }],
+      },
+      contents,
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: PLAN_RETRIEVAL_SCHEMA,
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message || `Gemini plan error (${response.status})`
+    );
+  }
+
+  const text = extractText(payload);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      intent: userMessage,
+      ragQuery: userMessage,
+      needsOnScreenGuidance: true,
+    };
+  }
+}
+
 module.exports = {
   chat,
   chatStep,
+  planRetrieval,
   getApiKey,
   getModel,
   RESPONSE_SCHEMA,
