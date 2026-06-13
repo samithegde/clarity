@@ -16,18 +16,20 @@ export function initAccessibilityOverlay() {
   applyPreferences(preferences);
 
   window.aiTools?.onAccessibilityPreferencesChanged?.((nextPreferences) => {
-    preferences = normalizePreferences(nextPreferences);
-    applyPreferences(preferences);
+    setPreferences(nextPreferences);
   });
 
   window.aiTools?.getAccessibilityPreferences?.()
     .then((nextPreferences) => {
-      preferences = normalizePreferences(nextPreferences);
-      applyPreferences(preferences);
+      setPreferences(nextPreferences);
     })
     .catch((error) => {
       console.error("Failed to load accessibility preferences:", error);
     });
+
+  window.addEventListener("overlay-accessibility-preferences", (event) => {
+    setPreferences(event.detail);
+  });
 }
 
 export function getAccessibilityPreferences() {
@@ -78,6 +80,11 @@ function normalizePreferences(nextPreferences = {}) {
     voiceControl: Boolean(nextPreferences.voiceControl),
     highContrast: Boolean(nextPreferences.highContrast),
   };
+}
+
+function setPreferences(nextPreferences = {}) {
+  preferences = normalizePreferences(nextPreferences);
+  applyPreferences(preferences);
 }
 
 function applyPreferences(nextPreferences) {
