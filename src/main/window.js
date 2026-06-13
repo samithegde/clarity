@@ -4,6 +4,8 @@ const { getWorkAreaBounds } = require("./utils/display");
 
 const CHAT_WIDTH = 420;
 const CHAT_HEIGHT = 650;
+const CHAT_MIN_WIDTH = 340;
+const CHAT_MIN_HEIGHT = 420;
 const CHAT_MARGIN = 24;
 const MINI_CHAT_SIZE = 56;
 const MINI_CHAT_MARGIN = 24;
@@ -122,10 +124,12 @@ function createChatWindow() {
   const chatBounds = getChatBounds();
   chatWindow = new BrowserWindow({
     ...chatBounds,
+    minWidth: CHAT_MIN_WIDTH,
+    minHeight: CHAT_MIN_HEIGHT,
     show: false,
     transparent: true,
     frame: false,
-    resizable: false,
+    resizable: true,
     movable: true,
     focusable: true,
     alwaysOnTop: true,
@@ -133,7 +137,7 @@ function createChatWindow() {
     autoHideMenuBar: true,
     hasShadow: false,
     backgroundColor: "#00000000",
-    ...(process.platform === "win32" ? { thickFrame: false, roundedCorners: true } : {}),
+    ...(process.platform === "win32" ? { thickFrame: true, roundedCorners: true } : {}),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
@@ -264,6 +268,15 @@ function minimizeChatWindow() {
 
 function restoreChatWindow() {
   showChatWindow();
+}
+
+function resizeChatWindow(size = {}) {
+  const win = getChatWindow();
+  if (!win) return;
+
+  const width = Math.max(CHAT_MIN_WIDTH, Math.round(Number(size.width) || 0));
+  const height = Math.max(CHAT_MIN_HEIGHT, Math.round(Number(size.height) || 0));
+  win.setSize(width, height);
 }
 
 function toggleChatWindow() {
@@ -667,6 +680,7 @@ module.exports = {
   hideChatWindow,
   minimizeChatWindow,
   restoreChatWindow,
+  resizeChatWindow,
   toggleChatWindow,
   sendToRenderer,
   sendOverlayPointAction,
