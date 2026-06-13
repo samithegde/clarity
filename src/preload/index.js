@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld("geminiChat", {
   step: (payload) => ipcRenderer.invoke("chat:step", payload),
 });
 
+contextBridge.exposeInMainWorld("ragKb", {
+  ingest: (payload) => ipcRenderer.invoke("rag:ingest", payload),
+  status: () => ipcRenderer.invoke("rag:status"),
+});
+
 contextBridge.exposeInMainWorld("chatWindow", {
   hide: () => ipcRenderer.invoke("window:hide-chat"),
   minimize: () => ipcRenderer.invoke("window:minimize-chat"),

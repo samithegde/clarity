@@ -23,6 +23,12 @@ let mediaRecorder = null;
 let recordingStream = null;
 let recordedChunks = [];
 let isTranscribing = false;
+let isStoppingRecording = false;
+let silenceMonitor = null;
+
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_DURATION_MS = 1200;
+const SILENCE_CHECK_INTERVAL_MS = 100;
 let pendingAttachments = [];
 let promptLoopActive = false;
 let promptLoopCancelled = false;
@@ -419,7 +425,64 @@ function resampleLinear(samples, fromRate, toRate) {
   return output;
 }
 
-async function startMicRecording(messagesEl, typingIndicator, micButton) {
+function stopSilenceMonitor() {
+  if (!silenceMonitor) return;
+
+  clearInterval(silenceMonitor.intervalId);
+  silenceMonitor.source?.disconnect();
+  silenceMonitor.audioContext?.close().catch(() => {});
+  silenceMonitor = null;
+}
+
+function startSilenceMonitor(stream, onSilence) {
+  stopSilenceMonitor();
+
+  const audioContext = new AudioContext();
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+
+  const source = audioContext.createMediaStreamSource(stream);
+  source.connect(analyser);
+
+  const samples = new Uint8Array(analyser.fftSize);
+  let hasSpoken = false;
+  let silenceStart = null;
+
+  const intervalId = setInterval(() => {
+    analyser.getByteTimeDomainData(samples);
+
+    let sumSquares = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const normalized = (samples[i] - 128) / 128;
+      sumSquares += normalized * normalized;
+    }
+
+    const rms = Math.sqrt(sumSquares / samples.length);
+    const isSilent = rms < SILENCE_THRESHOLD;
+
+    if (!isSilent) {
+      hasSpoken = true;
+      silenceStart = null;
+      return;
+    }
+
+    if (!hasSpoken) return;
+
+    if (!silenceStart) {
+      silenceStart = Date.now();
+      return;
+    }
+
+    if (Date.now() - silenceStart >= SILENCE_DURATION_MS) {
+      stopSilenceMonitor();
+      onSilence();
+    }
+  }, SILENCE_CHECK_INTERVAL_MS);
+
+  silenceMonitor = { audioContext, source, intervalId };
+}
+
+async function startMicRecording(messagesEl, typingIndicator, chatInput, micButton) {
   if (mediaRecorder || isTranscribing) return;
 
   recordingStream = await navigator.mediaDevices.getUserMedia({
@@ -441,11 +504,25 @@ async function startMicRecording(messagesEl, typingIndicator, micButton) {
 
   mediaRecorder.start();
   setMicButtonState(micButton, "recording");
-  pushSystemMessage(messagesEl, typingIndicator, "Listening... click Stop when finished.");
+  pushSystemMessage(
+    messagesEl,
+    typingIndicator,
+    "Listening... stops automatically after 2 seconds of silence."
+  );
+
+  startSilenceMonitor(recordingStream, () => {
+    stopMicRecording(messagesEl, typingIndicator, chatInput, micButton).catch((error) => {
+      setMicButtonState(micButton, "idle");
+      pushSystemMessage(messagesEl, typingIndicator, `Microphone error: ${error.message}`);
+    });
+  });
 }
 
 async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButton) {
-  if (!mediaRecorder) return;
+  if (!mediaRecorder || isStoppingRecording) return;
+
+  isStoppingRecording = true;
+  stopSilenceMonitor();
 
   isTranscribing = true;
   setMicButtonState(micButton, "transcribing");
@@ -467,8 +544,9 @@ async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButto
   recordedChunks = [];
 
   if (audioBlob.size === 0) {
-    setMicButtonState(micButton, "idle");
     isTranscribing = false;
+    isStoppingRecording = false;
+    setMicButtonState(micButton, "idle");
     pushSystemMessage(messagesEl, typingIndicator, "No audio captured.");
     return;
   }
@@ -502,6 +580,7 @@ async function stopMicRecording(messagesEl, typingIndicator, chatInput, micButto
     pushSystemMessage(messagesEl, typingIndicator, `Transcription failed: ${error.message}`);
   } finally {
     isTranscribing = false;
+    isStoppingRecording = false;
     setMicButtonState(micButton, "idle");
     chatInput.focus();
   }
@@ -680,8 +759,14 @@ async function handleAiCommand(text) {
     const firstStep = plan[0] ?? null;
     await executeHybridLoop(text, firstStep);
 
+    const retrieval = response?.retrieval;
+    const sourceNote =
+      retrieval?.sources?.length
+        ? `\n\n*Sources: ${retrieval.sources.join(", ")}*`
+        : "";
+
     return {
-      text: explanation,
+      text: explanation + sourceNote,
       plan,
       rawResponse: response?.text || JSON.stringify({ explanation, plan }),
     };
@@ -971,7 +1056,7 @@ export function initChat() {
       if (mediaRecorder) {
         await stopMicRecording(messagesEl, typingIndicator, chatInput, micButton);
       } else {
-        await startMicRecording(messagesEl, typingIndicator, micButton);
+        await startMicRecording(messagesEl, typingIndicator, chatInput, micButton);
       }
     } catch (error) {
       setMicButtonState(micButton, "idle");
