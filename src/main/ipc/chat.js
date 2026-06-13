@@ -1,9 +1,8 @@
-const { chat, chatStep, planRetrieval, refineCoordinate } = require("../gemini/service");
+const { chat, chatStep, planRetrieval } = require("../gemini/service");
 const { retrieve } = require("../rag/retrieve");
 const { resolveCollection } = require("../rag/collections");
 const { getStats } = require("../rag/store");
 
-// Holds the recipe for the active hybrid loop session so chatStep can reuse it.
 let sessionRecipe = null;
 
 function isRagEnabled() {
@@ -49,43 +48,17 @@ function registerChatIpc(ipcMain) {
     const recipe = await buildRecipe(userText, history);
     sessionRecipe = recipe;
 
-    return chat(history, { recipe, marks: payload?.marks ?? [] });
+    return chat(history, { recipe });
   });
 
   ipcMain.handle("chat:step", async (_event, payload) => {
-    const { goal, lastAction, screenshotBase64, marks } = payload ?? {};
+    const { goal, lastAction, screenshotBase64 } = payload ?? {};
     if (!goal) {
       throw new Error("goal is required.");
     }
 
     return chatStep(goal, lastAction ?? "", screenshotBase64 ?? null, {
       recipe: sessionRecipe,
-      marks: marks ?? [],
-    });
-  });
-
-  ipcMain.handle("chat:refine", async (_event, payload) => {
-    const {
-      description,
-      targetText,
-      croppedBase64,
-      cropW,
-      cropH,
-      markBBox,
-      ocrCandidates,
-    } = payload ?? {};
-    if (!description || !croppedBase64) {
-      throw new Error("description and croppedBase64 are required.");
-    }
-
-    return refineCoordinate({
-      description,
-      targetText,
-      croppedBase64,
-      cropW,
-      cropH,
-      markBBox,
-      ocrCandidates,
     });
   });
 }

@@ -1,3 +1,5 @@
+const { parseBboxArray } = require("../../shared/localization-coords");
+
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -21,30 +23,31 @@ const RESPONSE_SCHEMA = {
             description:
               "The action type. Use 'cursor' for pointer guidance and 'highlight' for rectangular emphasis.",
           },
-          markId: {
-            type: "INTEGER",
+          bbox: {
+            type: "ARRAY",
             description:
-              "The numbered Set-of-Mark box that best matches the target. Prefer this over raw coordinates when a mark catalog is provided.",
+              "Normalized bounding box [ymin, xmin, ymax, xmax] on 0-1000 scale. Required for cursor/highlight when plan is non-empty.",
+            items: { type: "INTEGER" },
           },
           x: {
             type: "INTEGER",
             description:
-              "Legacy fallback absolute X coordinate in display pixels when no mark catalog is available.",
+              "Legacy fallback absolute X coordinate in display pixels.",
           },
           y: {
             type: "INTEGER",
             description:
-              "Legacy fallback absolute Y coordinate in display pixels when no mark catalog is available.",
+              "Legacy fallback absolute Y coordinate in display pixels.",
           },
           w: {
             type: "INTEGER",
             description:
-              "Width in pixels. Required only when action is 'highlight'.",
+              "Width in pixels. Required only when action is 'highlight' and bbox is omitted.",
           },
           h: {
             type: "INTEGER",
             description:
-              "Height in pixels. Required only when action is 'highlight'.",
+              "Height in pixels. Required only when action is 'highlight' and bbox is omitted.",
           },
           description: {
             type: "STRING",
@@ -74,10 +77,9 @@ const SYSTEM_PROMPT =
   "Respond only with JSON matching the schema: explanation is the spoken reply; plan is an optional ordered list of on-screen actions." +
   "IMPORTANT: Default to plan=[]. Only add plan items when the user explicitly needs visual guidance — e.g. 'show me where', 'click', 'find', 'highlight', 'how do I open', or a multi-step UI walkthrough." +
   "Use plan=[] for greetings, general questions, definitions, summaries, confirmations, troubleshooting advice that does not require pointing, and any reply that can be fully understood from speech alone." +
-  "When a MARK CATALOG is provided, the screenshot contains numbered boxes. Pick the markId whose numbered box best matches the target. Do not invent coordinates." +
-  "When no MARK CATALOG is provided, legacy x/y coordinates are allowed." +
-  "For cursor guidance, use action='cursor' with markId and description." +
-  "For highlight emphasis, use action='highlight' with markId and description." +
+  "When plan is non-empty, each item must include bbox as [ymin, xmin, ymax, xmax] on a 0-1000 scale relative to the screenshot, tightly framing the target UI element." +
+  "For cursor guidance, use action='cursor' with bbox and description." +
+  "For highlight emphasis, use action='highlight' with bbox and description." +
   "Each description explains what the pointer is targeting and appears in the on-screen widget beside the cursor." +
   "Descriptions may use markdown for the widget (bold, lists, inline code)." +
   "Set isFinal=true on the last plan item when the user only needs one more on-screen action to finish the goal.";
@@ -190,11 +192,9 @@ function normalizePlanItem(item) {
     .toLowerCase();
   const action =
     rawAction || (item?.w != null && item?.h != null ? "highlight" : "cursor");
-  const markId = Math.round(Number(item?.markId));
-  const x = Math.round(Number(item?.x));
-  const y = Math.round(Number(item?.y));
   const description = String(item?.description ?? item?.label ?? "").trim();
   const isFinal = Boolean(item?.isFinal);
+  const bbox = parseBboxArray(item?.bbox);
 
   if (!["cursor", "highlight"].includes(action)) {
     return null;
@@ -204,10 +204,12 @@ function normalizePlanItem(item) {
     return null;
   }
 
-  if (Number.isFinite(markId) && markId > 0) {
-    return { action, markId, label: description, description, isFinal };
+  if (bbox) {
+    return { action, bbox, label: description, description, isFinal };
   }
 
+  const x = Math.round(Number(item?.x));
+  const y = Math.round(Number(item?.y));
   if (![x, y].every(Number.isFinite)) {
     return null;
   }
@@ -268,46 +270,7 @@ function buildRecipeBlock(recipe) {
   );
 }
 
-function buildMarkCatalogBlock(marks = []) {
-  if (!Array.isArray(marks) || !marks.length) return "";
-
-  const lines = marks.slice(0, 80).map((mark) => {
-    const label = String(mark.label || mark.controlType || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60);
-    const box = `(${Math.round(Number(mark.x))},${Math.round(Number(mark.y))},${Math.round(Number(mark.w))}x${Math.round(Number(mark.h))})`;
-    return `${mark.id}: ${label || "unlabeled"} ${box}`;
-  });
-
-  return (
-    "\n\n[MARK CATALOG]\n" +
-    lines.join("\n") +
-    "\n\n[MARK INSTRUCTION] The screenshot is annotated with these numbered boxes. " +
-    "For any cursor or highlight plan item, return the matching markId. " +
-    "Do not invent x/y coordinates when a markId is available."
-  );
-}
-
-function appendMarkCatalogToLastUserContent(contents, marks) {
-  const block = buildMarkCatalogBlock(marks);
-  if (!block) return contents;
-
-  const nextContents = contents.map((content) => ({
-    ...content,
-    parts: [...content.parts],
-  }));
-  const lastUser = [...nextContents]
-    .reverse()
-    .find((entry) => entry.role === "user");
-  if (lastUser) {
-    lastUser.parts.push({ text: block });
-  }
-
-  return nextContents;
-}
-
-async function chat(history, { recipe, marks } = {}) {
+async function chat(history, { recipe } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error(
@@ -315,10 +278,7 @@ async function chat(history, { recipe, marks } = {}) {
     );
   }
 
-  const contents = appendMarkCatalogToLastUserContent(
-    toGeminiContents(history),
-    marks,
-  );
+  const contents = toGeminiContents(history);
   if (!contents.length) {
     throw new Error("No messages to send.");
   }
@@ -376,8 +336,7 @@ const STEP_SYSTEM_PROMPT =
   "The user's original goal and the last action taken are provided. " +
   "Look at the new screenshot and return the SINGLE next action to take, " +
   "or an empty plan array if the task is fully complete or cannot proceed. " +
-  "When a MARK CATALOG is provided, return markId for the numbered box that best matches the next target. " +
-  "Do not invent coordinates when a markId is available. " +
+  "Return bbox as [ymin, xmin, ymax, xmax] on a 0-1000 scale for the next target. " +
   "Set isFinal=true on the plan item when it is the last action the user must take. " +
   "The explanation field should be a brief internal note (not spoken). " +
   "Never return more than one plan item.";
@@ -386,7 +345,7 @@ async function chatStep(
   goal,
   lastActionDescription,
   screenshotBase64,
-  { recipe, marks } = {},
+  { recipe } = {},
 ) {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -404,8 +363,6 @@ async function chatStep(
     const recipeSummary = recipe.chunks.map((c) => c.text).join("\n\n");
     userText = `[Workflow recipe]\n${recipeSummary}\n\n${userText}`;
   }
-
-  userText += buildMarkCatalogBlock(marks);
 
   const contents = [
     {
@@ -464,7 +421,6 @@ async function planRetrieval(userMessage, history) {
     throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  // Build a short recent history for context (text-only, no screenshots)
   const recentContents = history
     .filter(
       (m) => m.sender === "user" || (m.sender === "system" && m.rawResponse),
@@ -521,77 +477,11 @@ async function planRetrieval(userMessage, history) {
   }
 }
 
-const REFINE_RESPONSE_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    x: { type: "INTEGER", description: "X pixel coordinate of the element center within the cropped image" },
-    y: { type: "INTEGER", description: "Y pixel coordinate of the element center within the cropped image" },
-  },
-  required: ["x", "y"],
-};
-
-const REFINE_SYSTEM_PROMPT =
-  "You are a pixel-accurate UI element locator. " +
-  "You will receive a cropped screenshot and a description of a UI element. " +
-  "Return the EXACT center pixel coordinates of that element within THIS CROPPED IMAGE. " +
-  "Coordinates must be integers within the image bounds. " +
-  "If the element is partially cut off, return the visible center.";
-
-async function refineCoordinate({ description, croppedBase64, cropW, cropH }) {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
-
-  const model = getModel();
-  const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: REFINE_SYSTEM_PROMPT }] },
-      contents: [{
-        role: "user",
-        parts: [
-          {
-            text: `Find the exact center pixel of: "${description}"\nCropped image is ${cropW}x${cropH} pixels. Return coordinates within this crop only.`,
-          },
-          { inlineData: { mimeType: "image/jpeg", data: croppedBase64 } },
-        ],
-      }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: REFINE_RESPONSE_SCHEMA,
-      },
-    }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || `Gemini refine error (${response.status})`);
-  }
-
-  const text = extractText(payload);
-  if (!text) throw new Error("Gemini refine returned empty response.");
-
-  const parsed = JSON.parse(text);
-  const x = Math.round(Number(parsed.x));
-  const y = Math.round(Number(parsed.y));
-
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error("Gemini refine returned invalid coordinates.");
-  }
-
-  return { x, y };
-}
-
 module.exports = {
   chat,
   chatStep,
   planRetrieval,
-  refineCoordinate,
+  normalizePlanItem,
   getApiKey,
   getModel,
   RESPONSE_SCHEMA,

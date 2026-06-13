@@ -35,6 +35,11 @@ function keepWindowOffTaskbar(window) {
   window.setSkipTaskbar(true);
 }
 
+function applyAssistantContentProtection(win) {
+  if (!win || win.isDestroyed()) return;
+  win.setContentProtection(true);
+}
+
 function getChatBounds() {
   const workArea = getWorkAreaBounds();
   return {
@@ -153,6 +158,7 @@ function createOverlayWindowForDisplay(display) {
   overlayWin.setTitle("");
 
   keepWindowOffTaskbar(overlayWin);
+  applyAssistantContentProtection(overlayWin);
   overlayWin.setAlwaysOnTop(true, "screen-saver");
   overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWin.setIgnoreMouseEvents(true, { forward: true });
@@ -229,6 +235,7 @@ function createChatWindow() {
   chatWindow.setAlwaysOnTop(true, "screen-saver", 1);
   chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   keepWindowOffTaskbar(chatWindow);
+  applyAssistantContentProtection(chatWindow);
   chatWindow.loadFile(path.join(__dirname, "../renderer/pages/chat.html"));
 
   chatWindow.webContents.once("did-finish-load", () => {
@@ -291,6 +298,7 @@ function createMiniChatWindow() {
   miniChatWindow.setAlwaysOnTop(true, "screen-saver", 2);
   miniChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   keepWindowOffTaskbar(miniChatWindow);
+  applyAssistantContentProtection(miniChatWindow);
   miniChatWindow.loadFile(path.join(__dirname, "../renderer/pages/minichat.html"));
 
   miniChatWindow.webContents.once("did-finish-load", () => {

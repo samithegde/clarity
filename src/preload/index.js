@@ -20,7 +20,6 @@ contextBridge.exposeInMainWorld("whisper", {
 contextBridge.exposeInMainWorld("geminiChat", {
   send: (payload) => ipcRenderer.invoke("chat:send", payload),
   step: (payload) => ipcRenderer.invoke("chat:step", payload),
-  refine: (payload) => ipcRenderer.invoke("chat:refine", payload),
 });
 
 contextBridge.exposeInMainWorld("localization", {

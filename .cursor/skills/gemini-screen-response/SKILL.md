@@ -29,17 +29,17 @@ Use this as `generationConfig.responseSchema` with `generationConfig.responseMim
             "type": "STRING",
             "description": "Either 'cursor' (guidance pointer) or 'highlight' (rectangular emphasis)."
           },
-          "markId": {
-            "type": "INTEGER",
-            "description": "The numbered Set-of-Mark box that best matches the target."
+          "bbox": {
+            "type": "ARRAY",
+            "description": "Normalized bounding box [ymin, xmin, ymax, xmax] on 0-1000 scale."
           },
           "x": {
             "type": "INTEGER",
-            "description": "Legacy fallback absolute X coordinate when no mark catalog is available."
+            "description": "Legacy fallback absolute X coordinate."
           },
           "y": {
             "type": "INTEGER",
-            "description": "Legacy fallback absolute Y coordinate when no mark catalog is available."
+            "description": "Legacy fallback absolute Y coordinate."
           },
           "w": {
             "type": "INTEGER",
@@ -81,7 +81,7 @@ generationConfig: {
 }
 ```
 
-Parse the model text as JSON. Validate `explanation` (string) and `plan` (array). Each plan item must include `action`, `description` (or legacy `label`), and either a Set-of-Mark `markId` or legacy integer `x` and `y`. For legacy `highlight`, also require integer `w` and `h`.
+Parse the model text as JSON. Validate `explanation` (string) and `plan` (array). Each plan item must include `action`, `description` (or legacy `label`), and either a `bbox` array `[ymin, xmin, ymax, xmax]` on 0–1000 scale or legacy integer `x` and `y`. For legacy `highlight`, also require integer `w` and `h`.
 
 ## Field usage in this app
 
@@ -89,16 +89,18 @@ Parse the model text as JSON. Validate `explanation` (string) and `plan` (array)
 |-------|---------|
 | `explanation` | Shown in chat and read aloud via desktop TTS (`speechSynthesis`) |
 | `plan` | Ordered screen actions executed after the reply |
-| `markId` | Preferred coarse localization target, resolved against the mark catalog before refine |
+| `bbox` | Coarse target region from Gemini; converted to CSS pixels before Moondream/OCR refine |
 
 ## Plan execution
 
+Pipeline: **Text → Gemini (bbox %) → crop → OCR (text) / Moondream → Cursor**
+
 For each item in `plan`, execute by `action`:
 
-- `cursor`: resolve `markId` to the mark center, then call `window.aiTools.moveCursor({ x, y, description, stepIndex, stepTotal, animate: true, duration: 350 })`.
-- `highlight`: resolve `markId` to the mark bbox, move the cursor to its center, then call `window.aiTools.highlightRect({ x, y, width: w, height: h })`.
+- `cursor`: resolve `bbox` to a CSS box, crop with padding, refine with OCR (text targets) or Moondream, then call `window.aiTools.moveCursor({ x, y, description, stepIndex, stepTotal, animate: true, duration: 350 })`.
+- `highlight`: resolve `bbox` to a CSS rectangle, refine center, move cursor there, then call `window.aiTools.highlightRect({ x, y, width: w, height: h })`.
 
-When a mark catalog is present, `markId` is preferred and legacy coordinates are only a rollout fallback. An empty `plan` array is valid when no on-screen guidance is needed.
+An empty `plan` array is valid when no on-screen guidance is needed.
 
 ## System prompt guidance
 
@@ -106,7 +108,7 @@ Tell the model to:
 
 - Default to `plan: []`; only add actions when the user needs on-screen pointer/highlight guidance.
 - Use `plan: []` for greetings, general Q&A, definitions, summaries, confirmations, and any reply fully understandable from speech alone.
-- When `plan` is non-empty and the screenshot is annotated, pick the numbered `markId` whose box best matches the target. Do not invent coordinates.
+- When `plan` is non-empty, return `bbox` as `[ymin, xmin, ymax, xmax]` on a 0–1000 scale tightly framing the target element.
 - Keep `explanation` concise; one sentence for guided steps, slightly longer allowed when `plan` is empty.
 - Order `plan` steps in the sequence the user should follow.
 - Use `cursor` for guidance movement and `highlight` for box emphasis.

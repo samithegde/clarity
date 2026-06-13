@@ -2,7 +2,6 @@ import { getCaptureServices } from "./capture-service.js";
 import { getChatAccessibilityPreferences } from "./chat-accessibility.js";
 import { cropBase64Image } from "./context-crop.js";
 import { renderMarkdown } from "./markdown.js";
-import { annotateScreenshot } from "./som-annotate.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 5;
@@ -40,7 +39,7 @@ let promptLoopCancelled = false;
 let resolvePromptWait = null;
 let newChatButton = null;
 let isAiBusy = false;
-let latestLocalizationContext = null;
+let latestScreenContext = null;
 
 class PromptCancelledError extends Error {
   constructor() {
@@ -453,12 +452,12 @@ function screenFrameToAttachment(frame) {
 
 async function captureScreenAttachment() {
   try {
-    const context = await captureScreenContext({ annotate: true });
+    const context = await captureScreenContext();
     if (!context?.screenshotBase64) return null;
 
     return {
       id: crypto.randomUUID(),
-      name: "Screen with marks",
+      name: "Screen",
       mimeType: "image/jpeg",
       size: Math.ceil(context.screenshotBase64.length * 0.75),
       base64: context.screenshotBase64,
@@ -488,111 +487,139 @@ async function captureScreenBase64() {
   }
 }
 
-async function captureScreenContext({ annotate = false } = {}) {
+async function captureScreenContext() {
   const rawBase64 = await captureScreenBase64();
   if (!rawBase64) return null;
 
-  if (!annotate || !window.localization?.discoverMarks) {
-    latestLocalizationContext = null;
-    return {
-      rawBase64,
-      screenshotBase64: rawBase64,
-      marks: [],
-      displayBounds: null,
-      imageMeta: null,
-    };
-  }
+  latestScreenContext = {
+    rawBase64,
+    screenshotBase64: rawBase64,
+    imageMeta: {
+      dpr: window.devicePixelRatio || 1,
+      width: window.screen.width,
+      height: window.screen.height,
+    },
+  };
 
-  try {
-    const discovered = await window.localization.discoverMarks();
-    const marks = Array.isArray(discovered?.marks) ? discovered.marks : [];
-    if (!discovered?.enabled || !marks.length) {
-      latestLocalizationContext = null;
-      return {
-        rawBase64,
-        screenshotBase64: rawBase64,
-        marks: [],
-        displayBounds: discovered?.displayBounds ?? null,
-        imageMeta: null,
-      };
-    }
-
-    const annotated = await annotateScreenshot(rawBase64, marks);
-    latestLocalizationContext = {
-      rawBase64,
-      screenshotBase64: annotated.annotatedBase64,
-      marks: annotated.marks,
-      displayBounds: discovered.displayBounds ?? null,
-      imageMeta: annotated.imageMeta,
-    };
-
-    return latestLocalizationContext;
-  } catch (error) {
-    console.warn("[localization] SoM annotation failed:", error);
-    latestLocalizationContext = null;
-    return {
-      rawBase64,
-      screenshotBase64: rawBase64,
-      marks: [],
-      displayBounds: null,
-      imageMeta: null,
-    };
-  }
+  return latestScreenContext;
 }
 
-function imageMarkToCssBox(mark, imageMeta) {
-  const dpr = imageMeta?.dpr || window.devicePixelRatio || 1;
-  const imageWidth = imageMeta?.width || window.screen.width * dpr;
-  const imageHeight = imageMeta?.height || window.screen.height * dpr;
-  const scaleX = imageWidth / (window.screen.width * dpr);
-  const scaleY = imageHeight / (window.screen.height * dpr);
-  const divisorX = dpr * (Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1);
-  const divisorY = dpr * (Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1);
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function parseBboxArray(bbox) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null;
+  const nums = bbox.map((value) => Math.round(Number(value)));
+  if (!nums.every(Number.isFinite)) return null;
+  const [ymin, xmin, ymax, xmax] = nums;
+  if (ymax <= ymin || xmax <= xmin) return null;
+  return nums;
+}
+
+function bboxPercentToCss(bbox, screenW, screenH) {
+  const parsed = parseBboxArray(bbox);
+  if (!parsed) return null;
+
+  const [ymin, xmin, ymax, xmax] = parsed;
+  const width = Math.max(1, Math.round(Number(screenW)));
+  const height = Math.max(1, Math.round(Number(screenH)));
+
+  const x = Math.round((xmin / 1000) * width);
+  const y = Math.round((ymin / 1000) * height);
+  const w = Math.round(((xmax - xmin) / 1000) * width);
+  const h = Math.round(((ymax - ymin) / 1000) * height);
+
+  if (w <= 0 || h <= 0) return null;
 
   return {
-    x: Number(mark.x) / divisorX,
-    y: Number(mark.y) / divisorY,
-    w: Number(mark.w) / divisorX,
-    h: Number(mark.h) / divisorY,
+    x: clamp(x, 0, width - 1),
+    y: clamp(y, 0, height - 1),
+    w: clamp(w, 1, width - x),
+    h: clamp(h, 1, height - y),
   };
 }
 
-function resolveStepMark(step, context = latestLocalizationContext) {
-  const markId = Number(step?.markId);
-  if (!Number.isFinite(markId)) {
-    if (![Number(step?.x), Number(step?.y)].every(Number.isFinite)) return null;
+function mapCropPointToScreen(point, crop, step) {
+  const localX = Number(point?.x);
+  const localY = Number(point?.y);
+  if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+
+  const dpr = Number(crop?.dpr) || 1;
+  const scaleX = Number(crop?.scaleX) || 1;
+  const scaleY = Number(crop?.scaleY) || 1;
+  const x1 = Number(crop?.x1) || 0;
+  const y1 = Number(crop?.y1) || 0;
+
+  const refinedX = Math.round((x1 + localX) / (dpr * scaleX));
+  const refinedY = Math.round((y1 + localY) / (dpr * scaleY));
+
+  if (step.action === "highlight") {
+    return {
+      ...step,
+      x: Math.round(refinedX - (step.w || 0) / 2),
+      y: Math.round(refinedY - (step.h || 0) / 2),
+    };
+  }
+
+  return { ...step, x: refinedX, y: refinedY };
+}
+
+function mapBBoxCenterToScreen(step) {
+  const box = step?.markBBox;
+  if (!box) return step;
+
+  if (step.action === "highlight") {
+    return {
+      ...step,
+      x: Math.round(Number(box.x)),
+      y: Math.round(Number(box.y)),
+    };
+  }
+
+  return {
+    ...step,
+    x: Math.round(Number(box.x) + Number(box.w) / 2),
+    y: Math.round(Number(box.y) + Number(box.h) / 2),
+  };
+}
+
+function resolveStepBBox(step) {
+  const description = String(step?.description ?? step?.label ?? "").trim();
+  const action = String(step?.action ?? "cursor").toLowerCase();
+  const screenW = window.screen.width;
+  const screenH = window.screen.height;
+  const cssBox = bboxPercentToCss(step?.bbox, screenW, screenH);
+
+  if (!cssBox) {
+    const x = Number(step?.x);
+    const y = Number(step?.y);
+    if (![x, y].every(Number.isFinite)) return null;
 
     return {
       ...step,
       coarseMethod: "legacy",
       markBBox: step?.w && step?.h
         ? { x: step.x, y: step.y, w: step.w, h: step.h }
-        : null,
+        : { x: step.x, y: step.y, w: 1, h: 1 },
     };
   }
 
-  const mark = context?.marks?.find((candidate) => Number(candidate.id) === markId);
-  if (!mark) {
-    if (![Number(step?.x), Number(step?.y)].every(Number.isFinite)) return null;
-    return { ...step, coarseMethod: "legacy" };
-  }
+  const markBBox = { x: cssBox.x, y: cssBox.y, w: cssBox.w, h: cssBox.h };
+  const centerX = Math.round(cssBox.x + cssBox.w / 2);
+  const centerY = Math.round(cssBox.y + cssBox.h / 2);
 
-  const markBBox = imageMarkToCssBox(mark, context?.imageMeta);
-  const centerX = Math.round(markBBox.x + markBBox.w / 2);
-  const centerY = Math.round(markBBox.y + markBBox.h / 2);
-  const description = step.description || step.label || mark.label || `Mark ${mark.id}`;
-
-  if (step.action === "highlight") {
+  if (action === "highlight") {
     return {
       ...step,
-      x: Math.round(markBBox.x),
-      y: Math.round(markBBox.y),
-      w: Math.round(markBBox.w),
-      h: Math.round(markBBox.h),
+      x: cssBox.x,
+      y: cssBox.y,
+      w: cssBox.w,
+      h: cssBox.h,
       markBBox,
       description,
       label: description,
-      coarseMethod: "markId",
+      coarseMethod: "bbox",
     };
   }
 
@@ -600,12 +627,12 @@ function resolveStepMark(step, context = latestLocalizationContext) {
     ...step,
     x: centerX,
     y: centerY,
-    w: Math.round(markBBox.w),
-    h: Math.round(markBBox.h),
+    w: cssBox.w,
+    h: cssBox.h,
     markBBox,
     description,
     label: description,
-    coarseMethod: "markId",
+    coarseMethod: "bbox",
   };
 }
 
@@ -916,11 +943,7 @@ async function askGemini() {
       })),
     }));
 
-  return window.geminiChat.send({
-    history,
-    marks: latestLocalizationContext?.marks ?? [],
-    displayBounds: latestLocalizationContext?.displayBounds ?? null,
-  });
+  return window.geminiChat.send({ history });
 }
 
 function stopVoiceReaderAudio() {
@@ -1040,121 +1063,64 @@ function waitForNextClick() {
 }
 
 const MAX_HYBRID_STEPS = 10;
-const CROP_MARGIN_CSS = 300;
 const NEXT_STEP_CLICK_RADIUS = 10;
 
-async function cropBase64Image(base64, cxCSS, cyCSS) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const imgW = img.naturalWidth;
-      const imgH = img.naturalHeight;
-      const dpr = window.devicePixelRatio || 1;
-      const scaleX = imgW / (window.screen.width * dpr);
-      const scaleY = imgH / (window.screen.height * dpr);
-
-      const imgCx = Math.round(cxCSS * dpr * scaleX);
-      const imgCy = Math.round(cyCSS * dpr * scaleY);
-      const imgMarginX = Math.round(CROP_MARGIN_CSS * dpr * scaleX);
-      const imgMarginY = Math.round(CROP_MARGIN_CSS * dpr * scaleY);
-
-      const x1 = Math.max(0, imgCx - imgMarginX);
-      const y1 = Math.max(0, imgCy - imgMarginY);
-      const x2 = Math.min(imgW, imgCx + imgMarginX);
-      const y2 = Math.min(imgH, imgCy + imgMarginY);
-      const cropW = x2 - x1;
-      const cropH = y2 - y1;
-
-      const canvas = document.createElement("canvas");
-      canvas.width = cropW;
-      canvas.height = cropH;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, x1, y1, cropW, cropH, 0, 0, cropW, cropH);
-
-      resolve({
-        croppedBase64: canvas.toDataURL("image/jpeg", 0.85).split(",")[1],
-        x1, y1, cropW, cropH, imgW, imgH, dpr, scaleX, scaleY,
-      });
-    };
-    img.onerror = () => reject(new Error("Failed to load screenshot for cropping."));
-    img.src = `data:image/jpeg;base64,${base64}`;
-  });
-}
-
 async function refineStepCoordinates(step) {
-  if (!window.geminiChat?.refine) return step;
-
   const base64 = await captureScreenBase64();
   if (!base64) return step;
 
-  try {
-    const isHighlight = step.action === "highlight";
-    const anchor = step.markBBox || (isHighlight
-      ? { x: step.x, y: step.y, w: step.w || 1, h: step.h || 1 }
-      : { x: step.x, y: step.y, w: step.w || 1, h: step.h || 1 });
-    const targetText = extractTargetText(step.description || step.label || "");
-    const crop = await cropBase64Image(base64, anchor);
-    let refined = null;
-    let refineMethod = "gemini";
+  const anchor = step.markBBox || {
+    x: step.x,
+    y: step.y,
+    w: step.w || 1,
+    h: step.h || 1,
+  };
 
-    if (window.localization?.ocrCrop) {
+  try {
+    const crop = await cropBase64Image(base64, anchor);
+    const targetText = extractTargetText(step.description || step.label || "");
+    let refineMethod = "coarse-fallback";
+
+    if (targetText && window.localization?.ocrCrop) {
       const ocr = await window.localization.ocrCrop({
         croppedBase64: crop.croppedBase64,
         targetText,
       });
 
       if (ocr?.fastPath && Number.isFinite(ocr.fastPath.x) && Number.isFinite(ocr.fastPath.y)) {
-        refined = ocr.fastPath;
-        refineMethod = "ocr";
-      } else {
-        step.ocrCandidates = Array.isArray(ocr?.candidates) ? ocr.candidates : [];
+        const mapped = mapCropPointToScreen(ocr.fastPath, crop, step);
+        if (mapped) {
+          logLocalization({ coarseMethod: step.coarseMethod, refineMethod: "ocr" });
+          return mapped;
+        }
       }
     }
 
-    if (!refined && window.localization?.moondreamPoint) {
+    if (window.localization?.moondreamPoint) {
       const moondream = await window.localization.moondreamPoint({
         croppedBase64: crop.croppedBase64,
         cropW: crop.cropW,
         cropH: crop.cropH,
-        targetElement: targetText || step.description || step.label || "target element",
+        targetElement: step.description || step.label || "clickable target",
       });
 
       if (moondream && Number.isFinite(moondream.x) && Number.isFinite(moondream.y)) {
-        refined = moondream;
-        refineMethod = moondream.method || "moondream-point";
+        const mapped = mapCropPointToScreen(moondream, crop, step);
+        if (mapped) {
+          logLocalization({
+            coarseMethod: step.coarseMethod,
+            refineMethod: moondream.method || "moondream-point",
+          });
+          return mapped;
+        }
       }
     }
 
-    if (!refined) {
-      refined = await window.geminiChat.refine({
-        description: step.description || step.label || "",
-        targetText,
-        croppedBase64: crop.croppedBase64,
-        cropW: crop.cropW,
-        cropH: crop.cropH,
-        markBBox: crop.markBBox,
-        ocrCandidates: step.ocrCandidates ?? [],
-      });
-    }
-
-    if (!refined || !Number.isFinite(refined.x) || !Number.isFinite(refined.y)) return step;
-
-    const refinedX = Math.round((crop.x1 + refined.x) / (crop.dpr * crop.scaleX));
-    const refinedY = Math.round((crop.y1 + refined.y) / (crop.dpr * crop.scaleY));
     logLocalization({ coarseMethod: step.coarseMethod, refineMethod });
-
-    if (isHighlight) {
-      return {
-        ...step,
-        x: Math.round(refinedX - (step.w || 0) / 2),
-        y: Math.round(refinedY - (step.h || 0) / 2),
-      };
-    }
-
-    return { ...step, x: refinedX, y: refinedY };
+    return mapBBoxCenterToScreen(step);
   } catch {
     logLocalization({ coarseMethod: step.coarseMethod, refineMethod: "skipped" });
-    return step;
+    return mapBBoxCenterToScreen(step);
   }
 }
 
@@ -1221,12 +1187,12 @@ async function executeHybridLoop(goal, firstStep) {
   await window.aiTools.clearHighlights();
 
   let currentStep = firstStep;
-  let currentLocalizationContext = initialLocalizationContext;
   let stepNumber = 1;
+  let prefetchedCapture = null;
 
   try {
     while (currentStep && stepNumber <= MAX_HYBRID_STEPS && !promptLoopCancelled) {
-      const resolvedStep = resolveStepMark(currentStep, currentLocalizationContext);
+      const resolvedStep = resolveStepBBox(currentStep);
       if (!resolvedStep) {
         logLocalization({ coarseMethod: "unresolved", refineMethod: "skipped" });
         break;
@@ -1234,6 +1200,8 @@ async function executeHybridLoop(goal, firstStep) {
       const refinedStep = await refineStepCoordinates(resolvedStep);
       await executeSingleStep(refinedStep, { stepIndex: stepNumber });
       if (promptLoopCancelled) break;
+
+      prefetchedCapture = captureScreenBase64();
 
       const isLastStep = Boolean(currentStep.isFinal);
 
@@ -1263,16 +1231,16 @@ async function executeHybridLoop(goal, firstStep) {
       }
 
       if (promptLoopCancelled) break;
-      await delay(600);
 
-      const screenContext = await captureScreenContext({ annotate: true });
-      currentLocalizationContext = screenContext;
+      const screenshotBase64 = prefetchedCapture
+        ? await prefetchedCapture
+        : await captureScreenBase64();
+      prefetchedCapture = null;
+
       const response = await window.geminiChat.step({
         goal,
         lastAction: currentStep.description || currentStep.label || "",
-        screenshotBase64: screenContext?.screenshotBase64 ?? null,
-        marks: screenContext?.marks ?? [],
-        displayBounds: screenContext?.displayBounds ?? null,
+        screenshotBase64,
       });
 
       const nextPlan = Array.isArray(response?.plan) ? response.plan : [];
@@ -1293,6 +1261,7 @@ async function executeHybridLoop(goal, firstStep) {
       }
     }
   } finally {
+    prefetchedCapture = null;
     resetPromptLoopState();
     await window.aiTools.hideNextButton();
     await window.aiTools.clearHighlights();
@@ -1317,7 +1286,7 @@ async function handleAiCommand(text) {
     speakExplanation(explanation);
 
     const firstStep = plan[0] ?? null;
-    await executeHybridLoop(text, firstStep, latestLocalizationContext);
+    await executeHybridLoop(text, firstStep);
 
     const retrieval = response?.retrieval;
     const sourceNote =
