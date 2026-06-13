@@ -37,12 +37,17 @@
         }
 
         .sidebar-logo {
-            font-size: 18px;
-            font-weight: 700;
-            color: #b223e3;
             display: flex;
             align-items: center;
-            gap: 8px;
+            height: 42px;
+            overflow: hidden;
+        }
+
+        .sidebar-logo img {
+            width: 178px;
+            max-width: 100%;
+            height: auto;
+            display: block;
         }
 
         .sidebar-nav {
@@ -392,8 +397,7 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">
-                <span class="nav-icon">⚡</span>
-                Clarity
+                <img src="../assets/clarity.png" alt="Clarity" />
             </div>
         </div>
         <div class="sidebar-nav">
@@ -535,7 +539,7 @@
     </div>
 
     <script>
-        const { ipcRenderer } = require('electron');
+        const dashboardApi = window.dashboard;
         let overlayActive = false;
 
         function switchPage(page) {
@@ -561,7 +565,7 @@
 
         async function updateStatus() {
             try {
-                const status = await ipcRenderer.invoke('get-overlay-status');
+                const status = await dashboardApi.getOverlayStatus();
                 overlayActive = status.active;
                 updateUI();
             } catch (error) {
@@ -598,7 +602,7 @@
 
         async function updateDisplayInfo() {
             try {
-                const displays = await ipcRenderer.invoke('get-displays');
+                const displays = await dashboardApi.getDisplays();
                 
                 const countText = `${displays.length} Display${displays.length !== 1 ? 's' : ''} Connected`;
                 document.getElementById('displayCount').innerHTML = `<div style="color: #b0b0b0; font-size: 13px;">${countText}</div>`;
@@ -637,9 +641,9 @@
         async function toggleOverlay() {
             try {
                 if (overlayActive) {
-                    await ipcRenderer.invoke('hide-overlay');
+                    await dashboardApi.hideOverlay();
                 } else {
-                    await ipcRenderer.invoke('show-overlay');
+                    await dashboardApi.showOverlay();
                 }
                 await updateStatus();
             } catch (error) {
@@ -649,7 +653,7 @@
         }
 
         function showChat() {
-            ipcRenderer.invoke('show-chat');
+            dashboardApi.showChat();
         }
 
         function showSettings() {
@@ -658,12 +662,12 @@
 
         function quitApp() {
             if (confirm('Are you sure you want to quit Clarity?')) {
-                ipcRenderer.invoke('quit-app');
+                dashboardApi.quitApp();
             }
         }
 
         // Listen for overlay state changes
-        ipcRenderer.on('overlay-state-changed', (event, state) => {
+        dashboardApi.onOverlayStateChanged((state) => {
             overlayActive = state.active;
             updateUI();
         });

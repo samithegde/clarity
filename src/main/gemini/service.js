@@ -14,30 +14,34 @@ const RESPONSE_SCHEMA = {
       items: {
         type: "OBJECT",
         properties: {
+          action: {
+            type: "STRING",
+            description:
+              "The action type. Use 'cursor' for pointer guidance (x/y only) and 'highlight' for rectangular emphasis (x/y/w/h).",
+          },
           x: {
             type: "INTEGER",
-            description:
-              "The exact absolute X coordinate of the top-left corner of the item.",
+            description: "The exact absolute X coordinate in display pixels.",
           },
           y: {
             type: "INTEGER",
-            description:
-              "The exact absolute Y coordinate of the top-left corner of the item.",
+            description: "The exact absolute Y coordinate in display pixels.",
           },
           w: {
             type: "INTEGER",
-            description: "The width of the item in pixels.",
+            description: "Width in pixels. Required only when action is 'highlight'.",
           },
           h: {
             type: "INTEGER",
-            description: "The height of the item in pixels.",
+            description: "Height in pixels. Required only when action is 'highlight'.",
           },
           label: {
             type: "STRING",
-            description: "The short description or name of the button.",
+            description:
+              "Short text shown near cursor guidance or used to describe the highlight target. Supports markdown (bold, lists, code, links).",
           },
         },
-        required: ["x", "y", "w", "h", "label"],
+        required: ["action", "x", "y", "label"],
       },
     },
   },
@@ -46,8 +50,11 @@ const RESPONSE_SCHEMA = {
 
 const SYSTEM_PROMPT =
   "Your name is Clarity. You help users learn by guiding them through what's on their screen." +
-  "Each user message may include a screenshot. Use it to locate UI elements and return pixel-accurate bounding boxes." +
-  "Respond only with JSON matching the schema: explanation is one spoken sentence; plan is an ordered list of screen targets (x, y, w, h, label)." +
+  "Each user message may include a screenshot. Use it to locate UI elements and return pixel-accurate actions." +
+  "Respond only with JSON matching the schema: explanation is one spoken sentence; plan is an ordered list of actions." +
+  "For cursor guidance actions, use action='cursor' with x, y, label only." +
+  "For highlight actions, use action='highlight' with x, y, w, h, label." +
+  "Plan labels may use markdown for the on-screen step widget (bold, lists, inline code)." +
   "Use an empty plan when no on-screen guidance is needed.";
 
 function getApiKey() {
@@ -119,17 +126,32 @@ function extractText(payload) {
 }
 
 function normalizePlanItem(item) {
+  const rawAction = String(item?.action ?? "").trim().toLowerCase();
+  const action =
+    rawAction || (item?.w != null && item?.h != null ? "highlight" : "cursor");
   const x = Math.round(Number(item?.x));
   const y = Math.round(Number(item?.y));
-  const w = Math.round(Number(item?.w));
-  const h = Math.round(Number(item?.h));
   const label = String(item?.label ?? "").trim();
 
-  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+  if (!["cursor", "highlight"].includes(action)) {
     return null;
   }
 
-  return { x, y, w, h, label };
+  if (![x, y].every(Number.isFinite) || !label) {
+    return null;
+  }
+
+  if (action === "cursor") {
+    return { action, x, y, label };
+  }
+
+  const w = Math.round(Number(item?.w));
+  const h = Math.round(Number(item?.h));
+  if (![w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+    return null;
+  }
+
+  return { action, x, y, w, h, label };
 }
 
 function parseStructuredResponse(text) {

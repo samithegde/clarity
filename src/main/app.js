@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain } = require("electron");
-const { createWindows, toggleChatWindow, showChatWindow, cleanupWindows, showDashboardWindow } = require("./window");
+const { createWindows, toggleChatWindow, showChatWindow, cleanupWindows, showDashboardWindow, DASHBOARD_ENABLED } = require("./window");
 const { registerIpcHandlers } = require("./ipc");
 const { restoreWindowsTaskbar } = require("./utils/taskbar");
 const { configureCaptureSession } = require("./capture/session");
@@ -43,8 +43,13 @@ function createTray() {
   tray = new Tray(icon);
   tray.setToolTip("Clarity");
 
-  const menu = Menu.buildFromTemplate([
-    { label: "Dashboard", click: () => showDashboardWindow() },
+  const menuItems = [];
+
+  if (DASHBOARD_ENABLED) {
+    menuItems.push({ label: "Dashboard", click: () => showDashboardWindow() });
+  }
+
+  menuItems.push(
     { label: "Toggle Chat", click: () => toggleChatWindow() },
     { label: "Show Chat", click: () => showChatWindow() },
     { type: "separator" },
@@ -55,8 +60,10 @@ function createTray() {
         cleanupWindows();
         app.quit();
       },
-    },
-  ]);
+    }
+  );
+
+  const menu = Menu.buildFromTemplate(menuItems);
 
   tray.setContextMenu(menu);
   tray.on("double-click", () => toggleChatWindow());
@@ -70,13 +77,18 @@ app.whenReady().then(async () => {
   await restoreWindowsTaskbar();
   createWindows();
   createTray();
-  showDashboardWindow();
+
+  if (DASHBOARD_ENABLED) {
+    showDashboardWindow();
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindows();
       createTray();
-      showDashboardWindow();
+      if (DASHBOARD_ENABLED) {
+        showDashboardWindow();
+      }
     }
   });
 });

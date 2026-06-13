@@ -166,9 +166,10 @@ function renderAttachmentChip(attachment, { removable = false } = {}) {
 }
 
 function renderMessageAttachments(attachments = []) {
-  if (!attachments.length) return "";
+  const visibleAttachments = attachments.filter((attachment) => !attachment.contextOnly);
+  if (!visibleAttachments.length) return "";
 
-  const items = attachments
+  const items = visibleAttachments
     .map((attachment) => {
       const thumb = attachment.previewUrl
         ? `<img class="message-attachment-thumb" src="${attachment.previewUrl}" alt="" />`
@@ -239,7 +240,7 @@ function screenFrameToAttachment(frame) {
     mimeType: "image/jpeg",
     size: Math.ceil(base64.length * 0.75),
     base64,
-    previewUrl: frame.dataUrl,
+    contextOnly: true,
   };
 }
 
@@ -492,25 +493,53 @@ function delay(ms) {
 async function executeGeminiPlan(plan) {
   if (!Array.isArray(plan) || !plan.length || !window.aiTools) return;
 
+  await window.aiTools.ensureOverlay?.();
   await window.aiTools.setCursorVisible(true);
   await window.aiTools.clearHighlights();
 
-  for (const step of plan) {
-    await window.aiTools.moveCursor({
-      x: step.x,
-      y: step.y,
-      animate: true,
-      duration: 350,
-    });
-    await window.aiTools.highlightRect({
-      x: step.x,
-      y: step.y,
-      width: step.w,
-      height: step.h,
-      duration: 5000,
-    });
-    await delay(400);
+  for (const [index, step] of plan.entries()) {
+    const stepMeta = {
+      stepIndex: index + 1,
+      stepTotal: plan.length,
+    };
+
+    if (step.action === "cursor") {
+      await window.aiTools.moveCursor({
+        x: step.x,
+        y: step.y,
+        label: step.label,
+        animate: true,
+        duration: 350,
+        ...stepMeta,
+      });
+      await delay(1200);
+      continue;
+    }
+
+    if (step.action === "highlight") {
+      const centerX = step.x + Math.round(step.w / 2);
+      const centerY = step.y + Math.round(step.h / 2);
+
+      await window.aiTools.moveCursor({
+        x: centerX,
+        y: centerY,
+        label: step.label,
+        animate: true,
+        duration: 350,
+        ...stepMeta,
+      });
+      await window.aiTools.highlightRect({
+        x: step.x,
+        y: step.y,
+        width: step.w,
+        height: step.h,
+        duration: 5000,
+      });
+      await delay(900);
+    }
   }
+
+  await window.aiTools.setCursorVisible(false);
 }
 
 async function handleAiCommand(text) {
@@ -546,9 +575,21 @@ async function runCommand(text) {
   if (command === "/cursor" && parts.length >= 3) {
     const x = Number(parts[1]);
     const y = Number(parts[2]);
+    const label = parts.slice(3).join(" ").trim();
     if (Number.isFinite(x) && Number.isFinite(y)) {
-      await window.aiTools.moveCursor({ x, y, animate: true, duration: 350 });
-      return "Moved AI cursor.";
+      await window.aiTools.ensureOverlay?.();
+      await window.aiTools.setCursorVisible(true);
+      await window.aiTools.moveCursor({
+        x,
+        y,
+        label: label || "Move here",
+        animate: true,
+        duration: 350,
+      });
+      setTimeout(() => {
+        window.aiTools.setCursorVisible(false);
+      }, 4000);
+      return label ? `Moved AI cursor: ${label}` : "Moved AI cursor.";
     }
   }
 
@@ -558,6 +599,7 @@ async function runCommand(text) {
     const width = Number(parts[3]);
     const height = Number(parts[4]);
     if ([x, y, width, height].every(Number.isFinite)) {
+      await window.aiTools.ensureOverlay?.();
       await window.aiTools.highlightRect({ x, y, width, height, duration: 5000 });
       return "Added highlight.";
     }
@@ -623,6 +665,10 @@ function hideChatWindow() {
   window.chatWindow?.hide?.();
 }
 
+function minimizeChatWindow() {
+  window.chatWindow?.minimize?.();
+}
+
 export function initChat() {
   const messagesEl = document.getElementById("messages");
   const chatForm = document.getElementById("chat-form");
@@ -642,7 +688,7 @@ export function initChat() {
   });
 
   closeButton?.addEventListener("click", hideChatWindow);
-  minimizeButton?.addEventListener("click", hideChatWindow);
+  minimizeButton?.addEventListener("click", minimizeChatWindow);
 
   attachButton?.addEventListener("click", () => {
     fileInput?.click();

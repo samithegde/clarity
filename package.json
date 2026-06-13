@@ -23,10 +23,6 @@
     },
     "files": [
       "main.js",
-      "chat.html",
-      "dashboard.html",
-      "clarity.png",
-      "brandmark.png",
       "src/**/*"
     ],
     "win": {

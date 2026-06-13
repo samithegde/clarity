@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld("geminiChat", {
 
 contextBridge.exposeInMainWorld("chatWindow", {
   hide: () => ipcRenderer.invoke("window:hide-chat"),
+  minimize: () => ipcRenderer.invoke("window:minimize-chat"),
+});
+
+contextBridge.exposeInMainWorld("minichat", {
+  restore: () => ipcRenderer.invoke("window:restore-chat"),
 });
 
 contextBridge.exposeInMainWorld("dashboard", {
@@ -42,6 +47,7 @@ contextBridge.exposeInMainWorld("dashboard", {
 });
 
 contextBridge.exposeInMainWorld("aiTools", {
+  ensureOverlay: () => ipcRenderer.invoke("show-overlay"),
   moveCursor: (payload) => ipcRenderer.invoke("ai-tools:cursor-move", payload),
   setCursorVisible: (visible) =>
     ipcRenderer.invoke("ai-tools:cursor-set-visible", visible),

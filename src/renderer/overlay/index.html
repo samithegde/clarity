@@ -14,9 +14,19 @@
   </head>
   <body>
     <canvas id="highlighter-canvas" class="highlighter-canvas"></canvas>
-    <div id="ai-cursor" class="ai-cursor" aria-hidden="true">
+    <div id="ai-cursor" class="ai-cursor hidden" aria-hidden="true">
       <div class="ai-cursor-pointer"></div>
       <div class="ai-cursor-ring"></div>
+      <div id="ai-step-widget" class="ai-step-widget hidden" aria-live="polite">
+        <div class="ai-step-widget__tail"></div>
+        <div class="ai-step-widget__card">
+          <div class="ai-step-widget__header">
+            <span class="ai-step-widget__icon" aria-hidden="true">✦</span>
+            <span id="ai-step-widget-badge" class="ai-step-widget__badge"></span>
+          </div>
+          <div id="ai-step-widget-text" class="ai-step-widget__text"></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="../index.js"></script>
   </body>

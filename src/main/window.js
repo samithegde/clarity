@@ -5,9 +5,13 @@ const { getWorkAreaBounds } = require("./utils/display");
 const CHAT_WIDTH = 420;
 const CHAT_HEIGHT = 650;
 const CHAT_MARGIN = 24;
+const MINI_CHAT_SIZE = 56;
+const MINI_CHAT_MARGIN = 24;
+const DASHBOARD_ENABLED = false;
 
 let overlayWindows = [];
 let chatWindow = null;
+let miniChatWindow = null;
 let dashboardWindow = null;
 
 function getOverlayWindows() {
@@ -26,6 +30,16 @@ function getChatBounds() {
     y: workArea.y + workArea.height - CHAT_HEIGHT - CHAT_MARGIN,
     width: CHAT_WIDTH,
     height: CHAT_HEIGHT,
+  };
+}
+
+function getMiniChatBounds() {
+  const workArea = getWorkAreaBounds();
+  return {
+    x: workArea.x + workArea.width - MINI_CHAT_SIZE - MINI_CHAT_MARGIN,
+    y: workArea.y + workArea.height - MINI_CHAT_SIZE - MINI_CHAT_MARGIN,
+    width: MINI_CHAT_SIZE,
+    height: MINI_CHAT_SIZE,
   };
 }
 
@@ -60,6 +74,9 @@ function createOverlayWindowForDisplay(display) {
   overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWin.setIgnoreMouseEvents(true, { forward: true });
   overlayWin.loadFile(path.join(__dirname, "../renderer/overlay/index.html"));
+
+  overlayWin.displayId = display.id;
+  overlayWin.displayBounds = { ...display.bounds };
 
   overlayWin.once("ready-to-show", () => {
     overlayWin.showInactive();
@@ -115,7 +132,7 @@ function createChatWindow() {
   chatWindow.setAlwaysOnTop(true, "screen-saver", 1);
   chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   keepWindowOffTaskbar(chatWindow);
-  chatWindow.loadFile(path.join(__dirname, "../../chat.html"));
+  chatWindow.loadFile(path.join(__dirname, "../renderer/pages/chat.html"));
 
   chatWindow.once("ready-to-show", () => {
     chatWindow.show();
@@ -134,7 +151,73 @@ function getChatWindow() {
   return chatWindow && !chatWindow.isDestroyed() ? chatWindow : null;
 }
 
+function getMiniChatWindow() {
+  return miniChatWindow && !miniChatWindow.isDestroyed() ? miniChatWindow : null;
+}
+
+function createMiniChatWindow() {
+  const miniBounds = getMiniChatBounds();
+  miniChatWindow = new BrowserWindow({
+    ...miniBounds,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    focusable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#00000000",
+    ...(process.platform === "win32" ? { thickFrame: false } : {}),
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/index.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  miniChatWindow.setMenu(null);
+  miniChatWindow.setAlwaysOnTop(true, "screen-saver", 2);
+  miniChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  keepWindowOffTaskbar(miniChatWindow);
+  miniChatWindow.loadFile(path.join(__dirname, "../renderer/pages/minichat.html"));
+
+  miniChatWindow.once("ready-to-show", () => {
+    keepWindowOffTaskbar(miniChatWindow);
+  });
+
+  miniChatWindow.on("focus", () => keepWindowOffTaskbar(miniChatWindow));
+  miniChatWindow.on("closed", () => {
+    miniChatWindow = null;
+  });
+
+  return miniChatWindow;
+}
+
+function repositionMiniChatWindow() {
+  const win = getMiniChatWindow();
+  if (!win) return;
+  win.setBounds(getMiniChatBounds());
+}
+
+function showMiniChatWindow() {
+  const win = getMiniChatWindow() ?? createMiniChatWindow();
+  repositionMiniChatWindow();
+  win.showInactive();
+  keepWindowOffTaskbar(win);
+  return win;
+}
+
+function hideMiniChatWindow() {
+  const win = getMiniChatWindow();
+  if (!win) return;
+  win.hide();
+}
+
 function showChatWindow() {
+  hideMiniChatWindow();
   const win = getChatWindow() ?? createChatWindow();
   win.show();
   win.focus();
@@ -144,20 +227,44 @@ function showChatWindow() {
 
 function hideChatWindow() {
   const win = getChatWindow();
-  if (!win) return;
-  win.hide();
+  if (win) {
+    win.hide();
+  }
+  hideMiniChatWindow();
+}
+
+function minimizeChatWindow() {
+  const win = getChatWindow();
+  if (win) {
+    win.hide();
+  }
+  showMiniChatWindow();
+}
+
+function restoreChatWindow() {
+  showChatWindow();
 }
 
 function toggleChatWindow() {
   const win = getChatWindow() ?? createChatWindow();
+  const miniWin = getMiniChatWindow();
+
   if (win.isVisible()) {
-    hideChatWindow();
-  } else {
-    showChatWindow();
+    minimizeChatWindow();
+    return;
   }
+
+  if (miniWin?.isVisible()) {
+    restoreChatWindow();
+    return;
+  }
+
+  showChatWindow();
 }
 
 function createDashboardWindow() {
+  if (!DASHBOARD_ENABLED) return null;
+
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.focus();
     return dashboardWindow;
@@ -180,7 +287,7 @@ function createDashboardWindow() {
   });
 
   dashboardWindow.setMenu(null);
-  dashboardWindow.loadFile(path.join(__dirname, "../../dashboard.html"));
+  dashboardWindow.loadFile(path.join(__dirname, "../renderer/pages/dashboard.html"));
 
   dashboardWindow.once("ready-to-show", () => {
     dashboardWindow.show();
@@ -198,7 +305,10 @@ function getDashboardWindow() {
 }
 
 function showDashboardWindow() {
+  if (!DASHBOARD_ENABLED) return null;
+
   const win = getDashboardWindow() ?? createDashboardWindow();
+  if (!win) return null;
   win.show();
   win.focus();
   return win;
@@ -218,8 +328,52 @@ function closeDashboardWindow() {
 
 function sendToRenderer(channel, payload) {
   for (const win of getOverlayWindows()) {
-    win.webContents.send(channel, payload);
+    if (!win.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
   }
+}
+
+function findDisplayForPoint(x, y) {
+  return screen.getAllDisplays().find((display) => {
+    const bounds = display.bounds;
+    return (
+      x >= bounds.x &&
+      x < bounds.x + bounds.width &&
+      y >= bounds.y &&
+      y < bounds.y + bounds.height
+    );
+  });
+}
+
+function getOverlayForDisplay(displayId) {
+  return getOverlayWindows().find((win) => win.displayId === displayId);
+}
+
+function toDisplayLocalCoords(bounds, payload) {
+  const local = { ...payload };
+  if (Number.isFinite(local.x)) local.x -= bounds.x;
+  if (Number.isFinite(local.y)) local.y -= bounds.y;
+  return local;
+}
+
+function sendOverlayPointAction(channel, payload = {}) {
+  const x = Number(payload.x);
+  const y = Number(payload.y);
+
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    sendToRenderer(channel, payload);
+    return;
+  }
+
+  const display = findDisplayForPoint(x, y) ?? screen.getPrimaryDisplay();
+  const overlay = getOverlayForDisplay(display.id);
+  if (!overlay || overlay.isDestroyed()) return;
+
+  overlay.webContents.send(
+    channel,
+    toDisplayLocalCoords(display.bounds, payload)
+  );
 }
 
 function notifyDashboard(channel, payload) {
@@ -246,19 +400,37 @@ function hideOverlay() {
   closeOverlayWindows();
 }
 
+function repositionWindows() {
+  const chatWin = getChatWindow();
+  if (chatWin?.isVisible()) {
+    chatWin.setBounds(getChatBounds());
+  }
+
+  repositionMiniChatWindow();
+}
+
+function handleDisplayChange() {
+  rebuildOverlayWindows();
+  repositionWindows();
+}
+
 function createWindows() {
   createChatWindow();
+  showOverlay();
 
-  screen.on("display-added", rebuildOverlayWindows);
-  screen.on("display-removed", rebuildOverlayWindows);
-  screen.on("display-metrics-changed", rebuildOverlayWindows);
+  screen.on("display-added", handleDisplayChange);
+  screen.on("display-removed", handleDisplayChange);
+  screen.on("display-metrics-changed", handleDisplayChange);
 }
 
 function cleanupWindows() {
-  screen.removeListener("display-added", rebuildOverlayWindows);
-  screen.removeListener("display-removed", rebuildOverlayWindows);
-  screen.removeListener("display-metrics-changed", rebuildOverlayWindows);
+  screen.removeListener("display-added", handleDisplayChange);
+  screen.removeListener("display-removed", handleDisplayChange);
+  screen.removeListener("display-metrics-changed", handleDisplayChange);
   closeOverlayWindows();
+  if (miniChatWindow && !miniChatWindow.isDestroyed()) {
+    miniChatWindow.close();
+  }
   if (chatWindow && !chatWindow.isDestroyed()) {
     chatWindow.close();
   }
@@ -286,8 +458,12 @@ module.exports = {
   getChatWindow,
   showChatWindow,
   hideChatWindow,
+  minimizeChatWindow,
+  restoreChatWindow,
   toggleChatWindow,
   sendToRenderer,
+  sendOverlayPointAction,
+  DASHBOARD_ENABLED,
   createDashboardWindow,
   getDashboardWindow,
   showDashboardWindow,
