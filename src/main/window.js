@@ -446,14 +446,13 @@ function createDashboardWindow() {
   }
 
   dashboardWindow = new BrowserWindow({
-    width: 1920,
-    height: 1080,
+    width: 1200,
+    height: 800,
     show: false,
     frame: true,
     resizable: true,
     focusable: true,
     alwaysOnTop: false,
-    fullscreen: true,
     icon: path.join(__dirname, "../renderer/assets/clarityicon.png"),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
