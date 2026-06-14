@@ -949,14 +949,6 @@
 
                         <div class="card">
                             <div class="card-header">
-                                <div class="card-title">Audio</div>
-                                <div class="toggle-switch" id="audioToggle" onclick="toggleAccessibilityFeature('audio', this)"></div>
-                            </div>
-                            <div class="card-description">Enable overlay audio feedback for guidance and highlights</div>
-                        </div>
-
-                        <div class="card">
-                            <div class="card-header">
                                 <div class="card-title">Magnify/Zoom</div>
                                 <div class="toggle-switch" id="magnifyToggle" onclick="toggleAccessibilityFeature('magnify', this)"></div>
                             </div>
@@ -1306,7 +1298,7 @@
         }
 
         function getAccessibilityPreferencesFromUI() {
-            const features = ['largeText', 'audio', 'magnify', 'screenReader', 'voiceControl', 'highContrast'];
+            const features = ['largeText', 'screenReader', 'magnify', 'highContrast'];
             return features.reduce((preferences, feature) => {
                 preferences[feature] = document
                     .getElementById(`${feature}Toggle`)
@@ -1316,7 +1308,7 @@
         }
 
         function renderAccessibilityPreferences(preferences = {}) {
-            const features = ['largeText', 'audio', 'magnify', 'screenReader', 'voiceControl', 'highContrast'];
+            const features = ['largeText', 'screenReader', 'magnify', 'highContrast'];
 
             features.forEach((feature) => {
                 const toggle = document.getElementById(`${feature}Toggle`);
