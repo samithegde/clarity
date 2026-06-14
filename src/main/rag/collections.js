@@ -1,9 +1,10 @@
 const KNOWN_COLLECTIONS = {
   "google-docs": "Google Docs",
-  "figma": "Figma",
-  "vscode": "VS Code",
+  figma: "Figma",
+  vscode: "VS Code",
   "internal-wiki": "Internal Wiki",
-  "general": "General",
+  general: "General",
+  study: "Study Materials",
 };
 
 function resolveCollection(targetApp) {
@@ -16,4 +17,16 @@ function resolveCollection(targetApp) {
   return null;
 }
 
-module.exports = { KNOWN_COLLECTIONS, resolveCollection };
+function resolveTutorCollection(targetApp) {
+  const appCollection = resolveCollection(targetApp);
+  if (appCollection && appCollection !== "study") {
+    return appCollection;
+  }
+  return "study";
+}
+
+module.exports = {
+  KNOWN_COLLECTIONS,
+  resolveCollection,
+  resolveTutorCollection,
+};

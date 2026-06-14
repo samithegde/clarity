@@ -2,7 +2,13 @@ import { getCaptureServices } from "./capture-service.js";
 import { getChatAccessibilityPreferences } from "./chat-accessibility.js";
 import { announceAccessibilityMessage } from "./accessibility.js";
 import { cropBase64Image } from "./context-crop.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown, enhanceMermaidDiagrams, stripFencedCodeForSpeech } from "./markdown.js";
+import {
+  getActivitySessionId,
+  initActivityLogPanel,
+  logChatActivity,
+  setActivitySessionId,
+} from "./chat/activity-log.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 5;
@@ -14,6 +20,7 @@ const TEXT_EXTENSIONS = new Set([
 const INLINE_MIME_PREFIXES = ["image/", "audio/", "video/"];
 const INLINE_MIME_TYPES = new Set(["application/pdf"]);
 const CHAT_CONVERSATION_STORAGE_KEY = "clarity:chat-conversation-id";
+const TUTOR_MODE_STORAGE_KEY = "clarity:tutor-mode";
 
 const DEFAULT_WELCOME_MESSAGE = {
   text: "Hey there! I'm your Clarity AI. Ready to help you understand your screen, plan next steps, and keep moving.",
@@ -45,6 +52,7 @@ let typingIndicatorEl = null;
 let isAiBusy = false;
 let aiCancelled = false;
 let latestScreenContext = null;
+let tutorMode = false;
 
 class PromptCancelledError extends Error {
   constructor() {
@@ -66,16 +74,53 @@ function assertNotCancelled() {
   }
 }
 
+function loadTutorMode() {
+  try {
+    return localStorage.getItem(TUTOR_MODE_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveTutorMode(enabled) {
+  tutorMode = Boolean(enabled);
+  try {
+    localStorage.setItem(TUTOR_MODE_STORAGE_KEY, tutorMode ? "true" : "false");
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+function updateTutorModeToggle(button) {
+  if (!button) return;
+  button.setAttribute("aria-pressed", tutorMode ? "true" : "false");
+  button.classList.toggle("tutor-mode-toggle--active", tutorMode);
+  button.title = tutorMode ? "Tutor mode on" : "Tutor mode off";
+}
+
+function getBboxScreenDimensions() {
+  const meta = latestScreenContext?.imageMeta;
+  if (meta?.width && meta?.height) {
+    return { width: meta.width, height: meta.height };
+  }
+  return { width: window.screen.width, height: window.screen.height };
+}
+
 function cancelAllAgenticActions() {
   aiCancelled = true;
   cancelPrompt();
+  isAiBusy = false;
+  promptLoopActive = false;
+  updateActionButtonStates();
   window.aiTools?.emitPromptCancelled?.();
   stopVoiceReaderAudio();
   window.speechSynthesis?.cancel?.();
   if (typingIndicatorEl) hideTypingIndicator(typingIndicatorEl);
   void window.aiTools?.hideNextButton?.();
   void window.aiTools?.clearHighlights?.();
+  void window.aiTools?.clearAnnotations?.();
   void window.aiTools?.setCursorVisible?.(false);
+  if (chatInputEl) chatInputEl.focus();
 }
 
 function getConversationId() {
@@ -247,6 +292,7 @@ async function bootstrapChat(messagesEl, typingIndicator) {
 
 async function startNewChat(messagesEl, typingIndicator) {
   cancelPrompt();
+  void window.aiTools?.clearAnnotations?.();
 
   const previousConversationId = getConversationId();
 
@@ -620,6 +666,31 @@ function mapCropPointToScreen(point, crop, step) {
   return { ...step, x: refinedX, y: refinedY };
 }
 
+function mapCropBboxToScreen(bbox, crop, step = {}) {
+  const localX = Number(bbox?.x);
+  const localY = Number(bbox?.y);
+  const localW = Number(bbox?.w ?? bbox?.width);
+  const localH = Number(bbox?.h ?? bbox?.height);
+  if (![localX, localY, localW, localH].every(Number.isFinite) || localW <= 0 || localH <= 0) {
+    return null;
+  }
+
+  const dpr = Number(crop?.dpr) || 1;
+  const scaleX = Number(crop?.scaleX) || 1;
+  const scaleY = Number(crop?.scaleY) || 1;
+  const x1 = Number(crop?.x1) || 0;
+  const y1 = Number(crop?.y1) || 0;
+
+  return {
+    ...step,
+    action: "highlight",
+    x: Math.round((x1 + localX) / (dpr * scaleX)),
+    y: Math.round((y1 + localY) / (dpr * scaleY)),
+    w: Math.max(1, Math.round(localW / (dpr * scaleX))),
+    h: Math.max(1, Math.round(localH / (dpr * scaleY))),
+  };
+}
+
 function mapBBoxCenterToScreen(step) {
   const box = step?.markBBox;
   if (!box) return step;
@@ -642,8 +713,7 @@ function mapBBoxCenterToScreen(step) {
 function resolveStepBBox(step) {
   const description = String(step?.description ?? step?.label ?? "").trim();
   const action = String(step?.action ?? "cursor").toLowerCase();
-  const screenW = window.screen.width;
-  const screenH = window.screen.height;
+  const { width: screenW, height: screenH } = getBboxScreenDimensions();
   const cssBox = bboxPercentToCss(step?.bbox, screenW, screenH);
 
   if (!cssBox) {
@@ -705,9 +775,13 @@ function extractTargetText(description = "") {
 }
 
 function logLocalization(methods = {}) {
-  console.info("[localization]", {
-    coarseMethod: methods.coarseMethod || "legacy",
-    refineMethod: methods.refineMethod || "skipped",
+  const coarseMethod = methods.coarseMethod || "legacy";
+  const refineMethod = methods.refineMethod || "skipped";
+  console.info("[localization]", { coarseMethod, refineMethod });
+  void logChatActivity({
+    phase: "localization",
+    message: `Coordinate refine: ${coarseMethod} → ${refineMethod}`,
+    detail: methods,
   });
 }
 
@@ -742,6 +816,7 @@ function renderMessages(messagesEl, typingIndicator) {
   messagesEl.innerHTML = messages.map((msg) => renderMessageMarkup(msg)).join("");
   messagesEl.appendChild(typingIndicator);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  void enhanceMermaidDiagrams(messagesEl);
 }
 
 function setMicButtonState(button, state) {
@@ -1027,8 +1102,14 @@ async function askGemini() {
       })),
     }));
 
-  return window.geminiChat.send({ history }).then((result) => {
+  return window.geminiChat.send({
+    history,
+    mode: tutorMode ? "tutor" : "navigation",
+  }).then((result) => {
     assertNotCancelled();
+    if (result?.activitySessionId) {
+      setActivitySessionId(result.activitySessionId);
+    }
     return result;
   });
 }
@@ -1052,8 +1133,13 @@ function playBrowserSpeech(text) {
 }
 
 async function speakExplanation(text) {
-  const cleanText = String(text ?? "").replace(/\s+/g, " ").trim();
+  const cleanText = stripFencedCodeForSpeech(text);
   if (!cleanText || !getChatAccessibilityPreferences().screenReader || aiCancelled) return;
+
+  void logChatActivity({
+    phase: "tts",
+    message: `Speaking explanation (${cleanText.length} chars).`,
+  });
 
   try {
     if (!window.aiTools?.speakAccessibility) {
@@ -1188,6 +1274,33 @@ async function refineStepCoordinates(step) {
       }
     }
 
+    if (
+      step.action === "highlight" &&
+      window.localization?.moondreamDetect
+    ) {
+      const detected = await window.localization.moondreamDetect({
+        croppedBase64: crop.croppedBase64,
+        cropW: crop.cropW,
+        cropH: crop.cropH,
+        targetElement: step.description || step.label || "target element",
+      });
+
+      if (
+        detected &&
+        Number.isFinite(detected.w) &&
+        Number.isFinite(detected.h)
+      ) {
+        const mapped = mapCropBboxToScreen(detected, crop, step);
+        if (mapped) {
+          logLocalization({
+            coarseMethod: step.coarseMethod,
+            refineMethod: detected.method || "moondream-detect",
+          });
+          return mapped;
+        }
+      }
+    }
+
     if (window.localization?.moondreamPoint) {
       const moondream = await window.localization.moondreamPoint({
         croppedBase64: crop.croppedBase64,
@@ -1218,6 +1331,19 @@ async function refineStepCoordinates(step) {
 
 async function executeSingleStep(step, stepMeta) {
   const pointerText = step.description || step.label;
+
+  void logChatActivity({
+    phase: "action",
+    message: `Executing step ${stepMeta?.stepIndex ?? "?"}: ${step.action} "${pointerText || "target"}" at (${step.x}, ${step.y}).`,
+    detail: {
+      action: step.action,
+      x: step.x,
+      y: step.y,
+      w: step.w,
+      h: step.h,
+      isFinal: Boolean(step.isFinal),
+    },
+  });
 
   if (step.action === "cursor") {
     await window.aiTools.moveCursor({
@@ -1269,8 +1395,61 @@ function getStepClickTarget(step) {
   };
 }
 
+async function executeTutorVisuals(plan) {
+  if (!Array.isArray(plan) || !plan.length || !window.aiTools) return;
+
+  await window.aiTools.ensureOverlay?.();
+  await window.aiTools.setCursorVisible(false);
+
+  const annotations = [];
+
+  for (const step of plan) {
+    const asHighlight = { ...step, action: "highlight" };
+    const resolved = resolveStepBBox(asHighlight);
+    if (!resolved) continue;
+
+    const refined = await refineStepCoordinates(resolved);
+    if (!Number.isFinite(refined?.x) || !Number.isFinite(refined?.y)) continue;
+
+    const width = Math.max(
+      1,
+      Math.round(Number(refined.w ?? resolved.w ?? resolved.markBBox?.w ?? 40)),
+    );
+    const height = Math.max(
+      1,
+      Math.round(Number(refined.h ?? resolved.h ?? resolved.markBBox?.h ?? 40)),
+    );
+
+    annotations.push({
+      x: refined.x,
+      y: refined.y,
+      width,
+      height,
+      style: "tutor",
+      label: refined.description || refined.label || "",
+    });
+  }
+
+  if (annotations.length) {
+    await window.aiTools.setAnnotations(annotations);
+    void logChatActivity({
+      phase: "action",
+      message: `Tutor mode: placed ${annotations.length} highlight annotation(s).`,
+      detail: { count: annotations.length },
+    });
+  } else {
+    await window.aiTools.clearAnnotations?.();
+  }
+}
+
 async function executeHybridLoop(goal, firstStep) {
   if (!firstStep || !window.aiTools) return;
+
+  void logChatActivity({
+    phase: "action",
+    message: `Starting guided loop for: ${goal.slice(0, 160)}`,
+    detail: { firstAction: firstStep.action, firstTarget: firstStep.description || firstStep.label },
+  });
 
   beginPromptLoop();
 
@@ -1335,6 +1514,8 @@ async function executeHybridLoop(goal, firstStep) {
         goal,
         lastAction: currentStep.description || currentStep.label || "",
         screenshotBase64,
+        mode: tutorMode ? "tutor" : "navigation",
+        activitySessionId: getActivitySessionId(),
       });
       assertNotCancelled();
 
@@ -1385,7 +1566,20 @@ async function handleAiCommand(text) {
     assertNotCancelled();
 
     const firstStep = plan[0] ?? null;
-    await executeHybridLoop(text, firstStep);
+    if (tutorMode && plan.length) {
+      void logChatActivity({
+        phase: "action",
+        message: `Tutor mode: rendering ${plan.length} highlight(s) on screen.`,
+      });
+      await executeTutorVisuals(plan);
+    } else if (firstStep) {
+      await executeHybridLoop(text, firstStep);
+    } else {
+      void logChatActivity({
+        phase: "action",
+        message: "No on-screen guidance needed for this reply.",
+      });
+    }
     assertNotCancelled();
 
     const retrieval = response?.retrieval;
@@ -1413,6 +1607,11 @@ async function handleAiCommand(text) {
     ) {
       return null;
     }
+    void logChatActivity({
+      phase: "error",
+      level: "error",
+      message: error.message,
+    });
     return { text: `AI error: ${error.message}` };
   }
 }
@@ -1456,6 +1655,7 @@ async function runCommand(text) {
 
   if (command === "/clear") {
     await window.aiTools.clearHighlights();
+    await window.aiTools.clearAnnotations?.();
     return "Cleared highlights.";
   }
 
@@ -1483,6 +1683,65 @@ async function runCommand(text) {
     const local = audioCapture.getLocalStats();
     const main = await window.capture.getAudioBufferStats();
     return `Mic chunks local=${local.chunkCount}, main=${main.chunkCount}, samples=${main.sampleCount}.`;
+  }
+
+  if (command === "/ai" && parts[1] === "stats") {
+    if (!window.chatTelemetry?.summary) {
+      return "Chat telemetry bridge unavailable. Restart the app.";
+    }
+    const summary = await window.chatTelemetry.summary();
+    const lines = [
+      `Telemetry ${summary.enabled ? "enabled" : "disabled"} (last ${Math.round(summary.windowMs / 60000)}m)`,
+      `Events: ${summary.totalEvents}`,
+      `chat.send: ${summary.chatSend.count} calls, ${summary.chatSend.successCount} ok, ${summary.chatSend.errorCount} errors, avg ${summary.chatSend.avgMs}ms, p95 ${summary.chatSend.p95Ms}ms`,
+      `chat.step: ${summary.chatStep.count} calls, ${summary.chatStep.successCount} ok, ${summary.chatStep.errorCount} errors, avg ${summary.chatStep.avgMs}ms, p95 ${summary.chatStep.p95Ms}ms`,
+    ];
+    const providers = Object.entries(summary.providers || {});
+    if (providers.length) {
+      lines.push(
+        `Providers: ${providers.map(([name, count]) => `${name}=${count}`).join(", ")}`,
+      );
+    }
+    const models = Object.entries(summary.models || {});
+    if (models.length) {
+      lines.push(
+        `Models: ${models.map(([name, count]) => `${name}=${count}`).join(", ")}`,
+      );
+    }
+    if (summary.recentErrors?.length) {
+      lines.push(
+        `Recent errors: ${summary.recentErrors
+          .map((entry) => `${entry.event} (${entry.error})`)
+          .join(" | ")}`,
+      );
+    }
+    return lines.join("\n");
+  }
+
+  if (command === "/ai" && parts[1] === "log") {
+    if (!window.chatTelemetry?.activityRecent) {
+      return "Chat activity log unavailable. Restart the app.";
+    }
+    const entries = await window.chatTelemetry.activityRecent({
+      sessionId: getActivitySessionId(),
+      limit: 20,
+    });
+    if (!entries?.length) return "No activity logged for this session yet.";
+    return entries
+      .slice()
+      .reverse()
+      .map((entry) => {
+        const time = new Date(entry.ts).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        const raw = entry.detail?.raw
+          ? `\n${String(entry.detail.raw).slice(0, 1200)}`
+          : "";
+        return `${time} [${entry.phase}] ${entry.message}${raw}`;
+      })
+      .join("\n\n");
   }
 
   if (command === "/screens") {
@@ -1578,7 +1837,11 @@ export function initChat() {
   const attachmentPreview = document.getElementById("attachment-preview");
   const closeButton = document.getElementById("close-button");
   const minimizeButton = document.getElementById("minimize-button");
+  const tutorModeToggle = document.getElementById("tutor-mode-toggle");
   const typingIndicator = document.getElementById("typing-indicator");
+
+  tutorMode = loadTutorMode();
+  updateTutorModeToggle(tutorModeToggle);
 
   newChatButton = document.getElementById("new-chat-button");
   sendButton = document.getElementById("send-button");
@@ -1587,6 +1850,7 @@ export function initChat() {
 
   initChatResizeGrip();
   bindRagStatusListener();
+  initActivityLogPanel();
   void bootstrapChat(messagesEl, typingIndicator);
 
   chatInput.addEventListener("mousedown", () => {
@@ -1595,6 +1859,18 @@ export function initChat() {
 
   closeButton?.addEventListener("click", hideChatWindow);
   minimizeButton?.addEventListener("click", minimizeChatWindow);
+
+  tutorModeToggle?.addEventListener("click", () => {
+    saveTutorMode(!tutorMode);
+    updateTutorModeToggle(tutorModeToggle);
+    pushSystemMessage(
+      messagesEl,
+      typingIndicator,
+      tutorMode
+        ? "Tutor mode enabled — I'll explain concepts with diagrams and on-screen highlights."
+        : "Tutor mode disabled — back to navigation assistant mode.",
+    );
+  });
 
   newChatButton?.addEventListener("click", () => {
     if (isAiBusy || promptLoopActive) return;

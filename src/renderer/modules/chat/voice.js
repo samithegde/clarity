@@ -1,4 +1,5 @@
 import { getChatAccessibilityPreferences } from "../chat-accessibility.js";
+import { stripFencedCodeForSpeech } from "../markdown.js";
 import {
   SILENCE_CHECK_INTERVAL_MS,
   SILENCE_DURATION_MS,
@@ -60,7 +61,7 @@ export function playBrowserSpeech(text) {
 }
 
 export async function speakExplanation(text) {
-  const cleanText = String(text ?? "").replace(/\s+/g, " ").trim();
+  const cleanText = stripFencedCodeForSpeech(text);
   if (!cleanText || !getChatAccessibilityPreferences().screenReader) return;
 
   try {

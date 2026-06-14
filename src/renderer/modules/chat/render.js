@@ -1,4 +1,4 @@
-import { renderMarkdown } from "../markdown.js";
+import { renderMarkdown, enhanceMermaidDiagrams } from "../markdown.js";
 import { announceAccessibilityMessage } from "../accessibility.js";
 import { messages } from "./state.js";
 import { renderMessageAttachments } from "./attachments.js";
@@ -43,6 +43,7 @@ export function renderMessages(messagesEl, typingIndicator) {
   messagesEl.innerHTML = messages.map((msg) => renderMessageMarkup(msg)).join("");
   messagesEl.appendChild(typingIndicator);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  void enhanceMermaidDiagrams(messagesEl);
 }
 
 export function showTypingIndicator(typingIndicator, label = "Clarity is thinking…") {

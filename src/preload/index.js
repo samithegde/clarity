@@ -27,12 +27,29 @@ contextBridge.exposeInMainWorld("geminiChat", {
   },
 });
 
+contextBridge.exposeInMainWorld("chatTelemetry", {
+  status: () => ipcRenderer.invoke("telemetry:chat:status"),
+  summary: (payload) => ipcRenderer.invoke("telemetry:chat:summary", payload),
+  recent: (payload) => ipcRenderer.invoke("telemetry:chat:recent", payload),
+  activityRecent: (payload) =>
+    ipcRenderer.invoke("telemetry:chat:activity:recent", payload),
+  recordActivity: (payload) =>
+    ipcRenderer.invoke("telemetry:chat:activity:record", payload),
+  onActivity: (callback) => {
+    const handler = (_event, entry) => callback(entry);
+    ipcRenderer.on("telemetry:chat:activity", handler);
+    return () => ipcRenderer.removeListener("telemetry:chat:activity", handler);
+  },
+});
+
 contextBridge.exposeInMainWorld("localization", {
   isSomEnabled: () => ipcRenderer.invoke("localization:som-enabled"),
   discoverMarks: () => ipcRenderer.invoke("ui-marks:discover"),
   ocrCrop: (payload) => ipcRenderer.invoke("localization:ocr-crop", payload),
   moondreamPoint: (payload) =>
     ipcRenderer.invoke("localization:moondream-point", payload),
+  moondreamDetect: (payload) =>
+    ipcRenderer.invoke("localization:moondream-detect", payload),
 });
 
 contextBridge.exposeInMainWorld("chatHistory", {
@@ -102,6 +119,9 @@ contextBridge.exposeInMainWorld("aiTools", {
   highlightStroke: (payload) =>
     ipcRenderer.invoke("ai-tools:highlighter-stroke", payload),
   clearHighlights: () => ipcRenderer.invoke("ai-tools:highlighter-clear"),
+  setAnnotations: (items) => ipcRenderer.invoke("annotations:set", items),
+  clearAnnotations: () => ipcRenderer.invoke("annotations:clear"),
+  replayAnnotations: () => ipcRenderer.invoke("annotations:replay"),
   showNextButton: (payload) => ipcRenderer.invoke("ai-tools:show-next-button", payload),
   hideNextButton: () => ipcRenderer.invoke("ai-tools:hide-next-button"),
   showCompleteButton: () => ipcRenderer.invoke("ai-tools:show-complete-button"),

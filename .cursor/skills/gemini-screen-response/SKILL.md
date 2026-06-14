@@ -113,3 +113,14 @@ Tell the model to:
 - Order `plan` steps in the sequence the user should follow.
 - Use `cursor` for guidance movement and `highlight` for box emphasis.
 - Treat `description` as the primary field for what the pointer is targeting.
+
+## Tutor mode (`mode: "tutor"`)
+
+When tutor mode is active via the chat header toggle:
+
+- Use `TUTOR_SYSTEM_PROMPT` in `src/main/gemini/service.js` instead of the navigation prompt.
+- `explanation` may include a markdown ` ```mermaid ` fenced block for concept diagrams (rendered in chat, stripped before TTS).
+- Prefer `action: "highlight"` over `cursor` for on-screen study emphasis.
+- Default `plan: []` for abstract concept questions with no on-screen referent.
+- RAG retrieval prefers the `study` collection under `docs/study/`.
+- Renderer executes highlights via `executeTutorVisuals()` (no Next/Complete loop); annotations persist until the next tutor answer or `/clear`.

@@ -8,6 +8,7 @@ const { registerDashboardIpc } = require("./dashboard");
 const { registerElevenLabsIpc } = require("./elevenlabs");
 const { registerRagIpc } = require("./rag");
 const { registerLocalizationIpc } = require("./localization");
+const { registerTelemetryIpc } = require("./telemetry");
 
 function registerIpcHandlers(ipcMain) {
   registerAiToolsIpc(ipcMain);
@@ -20,6 +21,7 @@ function registerIpcHandlers(ipcMain) {
   registerElevenLabsIpc(ipcMain);
   registerRagIpc(ipcMain);
   registerLocalizationIpc(ipcMain);
+  registerTelemetryIpc(ipcMain);
 }
 
 module.exports = { registerIpcHandlers };

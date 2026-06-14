@@ -2,6 +2,7 @@ import {
   bboxPercentToCss,
   mapBBoxCenterToScreen,
   mapCropPointToScreen,
+  mapCropBboxToScreen,
 } from "../../../shared/localization-coords.mjs";
 import { getCaptureServices } from "../capture-service.js";
 import { cropBase64Image } from "../context-crop.js";
@@ -18,11 +19,24 @@ import {
 import { messages, promptLoopCancelled, PromptCancelledError } from "./state.js";
 import { speakExplanation } from "./voice.js";
 
+const TUTOR_MODE_STORAGE_KEY = "clarity:tutor-mode";
+
+function isTutorModeEnabled() {
+  try {
+    return localStorage.getItem(TUTOR_MODE_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function getBboxScreenDimensions() {
+  return { width: window.screen.width, height: window.screen.height };
+}
+
 export function resolveStepBBox(step) {
   const description = String(step?.description ?? step?.label ?? "").trim();
   const action = String(step?.action ?? "cursor").toLowerCase();
-  const screenW = window.screen.width;
-  const screenH = window.screen.height;
+  const { width: screenW, height: screenH } = getBboxScreenDimensions();
   const cssBox = bboxPercentToCss(step?.bbox, screenW, screenH);
 
   if (!cssBox) {
@@ -108,7 +122,10 @@ export async function askGemini() {
       })),
     }));
 
-  return window.geminiChat.send({ history });
+  return window.geminiChat.send({
+    history,
+    mode: isTutorModeEnabled() ? "tutor" : "navigation",
+  });
 }
 
 export async function refineStepCoordinates(step) {
@@ -137,6 +154,26 @@ export async function refineStepCoordinates(step) {
         const mapped = mapCropPointToScreen(ocr.fastPath, crop, step);
         if (mapped) {
           logLocalization({ coarseMethod: step.coarseMethod, refineMethod: "ocr" });
+          return mapped;
+        }
+      }
+    }
+
+    if (window.localization?.moondreamDetect && step.action === "highlight") {
+      const detected = await window.localization.moondreamDetect({
+        croppedBase64: crop.croppedBase64,
+        cropW: crop.cropW,
+        cropH: crop.cropH,
+        targetElement: step.description || step.label || "target element",
+      });
+
+      if (detected && Number.isFinite(detected.w) && Number.isFinite(detected.h)) {
+        const mapped = mapCropBboxToScreen(detected, crop, step);
+        if (mapped) {
+          logLocalization({
+            coarseMethod: step.coarseMethod,
+            refineMethod: detected.method || "moondream-detect",
+          });
           return mapped;
         }
       }
@@ -221,6 +258,38 @@ export function getStepClickTarget(step) {
     x: step?.x,
     y: step?.y,
   };
+}
+
+export async function executeTutorVisuals(plan) {
+  if (!Array.isArray(plan) || !plan.length || !window.aiTools) return;
+
+  await window.aiTools.ensureOverlay?.();
+  await window.aiTools.setCursorVisible(false);
+
+  const annotations = [];
+
+  for (const step of plan) {
+    const resolved = resolveStepBBox({ ...step, action: "highlight" });
+    if (!resolved) continue;
+
+    const refined = await refineStepCoordinates(resolved);
+    if (!Number.isFinite(refined?.x) || !Number.isFinite(refined?.y)) continue;
+
+    annotations.push({
+      x: refined.x,
+      y: refined.y,
+      width: Math.max(1, Math.round(Number(refined.w ?? resolved.w ?? 40))),
+      height: Math.max(1, Math.round(Number(refined.h ?? resolved.h ?? 40))),
+      style: "tutor",
+      label: refined.description || refined.label || "",
+    });
+  }
+
+  if (annotations.length) {
+    await window.aiTools.setAnnotations(annotations);
+  } else {
+    await window.aiTools.clearAnnotations?.();
+  }
 }
 
 export async function executeHybridLoop(goal, firstStep) {
@@ -339,7 +408,11 @@ export async function handleAiCommand(text) {
     speakExplanation(explanation);
 
     const firstStep = plan[0] ?? null;
-    await executeHybridLoop(text, firstStep);
+    if (isTutorModeEnabled() && plan.length) {
+      await executeTutorVisuals(plan);
+    } else if (firstStep) {
+      await executeHybridLoop(text, firstStep);
+    }
 
     const retrieval = response?.retrieval;
     const via =
@@ -402,6 +475,7 @@ export async function runCommand(text) {
 
   if (command === "/clear") {
     await window.aiTools.clearHighlights();
+    await window.aiTools.clearAnnotations?.();
     return "Cleared highlights.";
   }
 
@@ -429,6 +503,39 @@ export async function runCommand(text) {
     const local = audioCapture.getLocalStats();
     const main = await window.capture.getAudioBufferStats();
     return `Mic chunks local=${local.chunkCount}, main=${main.chunkCount}, samples=${main.sampleCount}.`;
+  }
+
+  if (command === "/ai" && parts[1] === "stats") {
+    if (!window.chatTelemetry?.summary) {
+      return "Chat telemetry bridge unavailable. Restart the app.";
+    }
+    const summary = await window.chatTelemetry.summary();
+    const lines = [
+      `Telemetry ${summary.enabled ? "enabled" : "disabled"} (last ${Math.round(summary.windowMs / 60000)}m)`,
+      `Events: ${summary.totalEvents}`,
+      `chat.send: ${summary.chatSend.count} calls, ${summary.chatSend.successCount} ok, ${summary.chatSend.errorCount} errors, avg ${summary.chatSend.avgMs}ms, p95 ${summary.chatSend.p95Ms}ms`,
+      `chat.step: ${summary.chatStep.count} calls, ${summary.chatStep.successCount} ok, ${summary.chatStep.errorCount} errors, avg ${summary.chatStep.avgMs}ms, p95 ${summary.chatStep.p95Ms}ms`,
+    ];
+    const providers = Object.entries(summary.providers || {});
+    if (providers.length) {
+      lines.push(
+        `Providers: ${providers.map(([name, count]) => `${name}=${count}`).join(", ")}`,
+      );
+    }
+    const models = Object.entries(summary.models || {});
+    if (models.length) {
+      lines.push(
+        `Models: ${models.map(([name, count]) => `${name}=${count}`).join(", ")}`,
+      );
+    }
+    if (summary.recentErrors?.length) {
+      lines.push(
+        `Recent errors: ${summary.recentErrors
+          .map((entry) => `${entry.event} (${entry.error})`)
+          .join(" | ")}`,
+      );
+    }
+    return lines.join("\n");
   }
 
   if (command === "/screens") {

@@ -7,7 +7,30 @@ const {
   getChatWindow,
   showOverlay,
   hideOverlayWindowsOnly,
+  replayTutorAnnotationsForOverlay,
 } = require("../window");
+const {
+  setTutorAnnotations,
+  clearTutorAnnotations,
+} = require("../annotations/store");
+
+const TUTOR_HIGHLIGHT_DEFAULTS = {
+  fill: "rgba(99, 102, 241, 0.25)",
+  stroke: "rgba(129, 140, 248, 0.95)",
+  lineWidth: 4,
+  style: "tutor",
+};
+
+function enrichHighlightPayload(payload = {}) {
+  if (payload.style !== "tutor") {
+    return payload;
+  }
+
+  return {
+    ...TUTOR_HIGHLIGHT_DEFAULTS,
+    ...payload,
+  };
+}
 
 function setOverlayInteractivity(interactive) {
   if (typeof setOverlaysInteractive === "function") {
@@ -20,6 +43,18 @@ function setOverlayInteractivity(interactive) {
       win.setIgnoreMouseEvents(!interactive, { forward: !interactive });
     }
   }
+}
+
+async function drawTutorAnnotations(items = []) {
+  const annotations = Array.isArray(items) ? items.map((item) => enrichHighlightPayload(item)) : [];
+  setTutorAnnotations(annotations);
+  sendToRenderer("ai:highlighter:clear");
+
+  for (const annotation of annotations) {
+    await sendOverlayPointAction("ai:highlighter:rect", annotation);
+  }
+
+  return { count: annotations.length };
 }
 
 function registerAiToolsIpc(ipcMain) {
@@ -41,7 +76,7 @@ function registerAiToolsIpc(ipcMain) {
   });
 
   ipcMain.handle("ai-tools:highlighter-rect", async (_event, payload) => {
-    await sendOverlayPointAction("ai:highlighter:rect", payload);
+    await sendOverlayPointAction("ai:highlighter:rect", enrichHighlightPayload(payload));
     return { ok: true };
   });
 
@@ -56,7 +91,29 @@ function registerAiToolsIpc(ipcMain) {
   });
 
   ipcMain.handle("ai-tools:highlighter-clear", () => {
+    clearTutorAnnotations();
     sendToRenderer("ai:highlighter:clear");
+    return { ok: true };
+  });
+
+  ipcMain.handle("annotations:set", async (_event, payload) => {
+    const items = Array.isArray(payload?.items) ? payload.items : payload;
+    return drawTutorAnnotations(items);
+  });
+
+  ipcMain.handle("annotations:clear", () => {
+    clearTutorAnnotations();
+    sendToRenderer("ai:highlighter:clear");
+    return { ok: true };
+  });
+
+  ipcMain.handle("annotations:replay", async () => {
+    await showOverlay();
+    for (const win of getOverlayWindows()) {
+      if (!win.isDestroyed()) {
+        await replayTutorAnnotationsForOverlay(win);
+      }
+    }
     return { ok: true };
   });
 

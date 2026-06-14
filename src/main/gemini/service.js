@@ -84,6 +84,27 @@ const SYSTEM_PROMPT =
   "Descriptions may use markdown for the widget (bold, lists, inline code)." +
   "Set isFinal=true on the last plan item when the user only needs one more on-screen action to finish the goal.";
 
+const TUTOR_SYSTEM_PROMPT =
+  "Your name is Clarity in Tutor Mode — a patient study companion, not a task executor." +
+  "Each user message may include a screenshot for context." +
+  "Respond only with JSON matching the schema: explanation is the spoken reply; plan is an optional ordered list of on-screen actions." +
+  "When explaining concepts, ground answers in retrieved study material when provided." +
+  "Include a markdown fenced code block with language mermaid inside explanation when a diagram clarifies the concept (flowcharts, cycles, hierarchies, processes)." +
+  "Use plan[] with action='highlight' and tight bbox to emphasize on-screen elements the user asks about (e.g. 'this diagram', 'what is this', 'on my screen')." +
+  "Prefer highlight over cursor for tutoring; use cursor only when pointing to a specific clickable control the user must press." +
+  "Default plan=[] for pure conceptual questions with no on-screen referent." +
+  "When plan is non-empty, each item must include bbox as [ymin, xmin, ymax, xmax] on a 0-1000 scale relative to the screenshot." +
+  "Ask a brief check-for-understanding question at the end of explanation when appropriate." +
+  "Descriptions may use markdown for the on-screen widget (bold, lists, inline code).";
+
+const TUTOR_PLAN_RETRIEVAL_SYSTEM_PROMPT =
+  "You are an intent parser for Clarity in Tutor Mode. " +
+  "Given the user's latest message and conversation history, produce a JSON object with: " +
+  "intent (concise statement of what the user wants to learn), " +
+  "ragQuery (optimized search query for study materials — rephrase as a study question), " +
+  "needsOnScreenGuidance (true when the user references something visible on screen — 'this', 'here', 'on my screen', 'in this diagram'; false for abstract concept questions), " +
+  "targetApp (omit unless the user is clearly asking about a specific app's UI).";
+
 const PLAN_RETRIEVAL_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -307,12 +328,22 @@ function parseStructuredResponse(text) {
   };
 }
 
-function buildRecipeBlock(recipe) {
+function buildRecipeBlock(recipe, { mode } = {}) {
   if (!recipe?.chunks?.length) return "";
 
   const sections = recipe.chunks
     .map((chunk) => `[Source: ${chunk.source}]\n${chunk.text}`)
     .join("\n\n---\n\n");
+
+  if (mode === "tutor") {
+    return (
+      "\n\n[STUDY KNOWLEDGE BASE]\n" +
+      sections +
+      "\n\n[INSTRUCTION] The knowledge base above contains study material. " +
+      "Ground your explanation in these sources when relevant. " +
+      "Use a mermaid diagram in explanation when it helps the learner understand relationships or processes."
+    );
+  }
 
   return (
     "\n\n[EXTERNAL KNOWLEDGE]\n" +
@@ -322,7 +353,27 @@ function buildRecipeBlock(recipe) {
   );
 }
 
-async function chat(history, { recipe } = {}) {
+function resolveSystemPrompt(mode) {
+  return mode === "tutor" ? TUTOR_SYSTEM_PROMPT : SYSTEM_PROMPT;
+}
+
+function resolveStepSystemPrompt(mode) {
+  if (mode === "tutor") {
+    return (
+      "You are Clarity in Tutor Mode mid-lesson. " +
+      "The user's original study question and the last highlight action are provided. " +
+      "Look at the new screenshot and return the SINGLE next highlight if the user still needs on-screen emphasis, " +
+      "or an empty plan array if the concept is fully explained. " +
+      "Prefer action='highlight' with bbox on a 0-1000 scale. " +
+      "The explanation field is a brief internal note (not spoken). " +
+      "Never return more than one plan item."
+    );
+  }
+
+  return STEP_SYSTEM_PROMPT;
+}
+
+async function chat(history, { recipe, mode } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error(
@@ -337,7 +388,7 @@ async function chat(history, { recipe } = {}) {
 
   const model = getModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
-  const systemPrompt = SYSTEM_PROMPT + buildRecipeBlock(recipe);
+  const systemPrompt = resolveSystemPrompt(mode) + buildRecipeBlock(recipe, { mode });
 
   const response = await fetch(url, {
     method: "POST",
@@ -398,7 +449,7 @@ async function chatStep(
   goal,
   lastActionDescription,
   screenshotBase64,
-  { recipe } = {},
+  { recipe, mode } = {},
 ) {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -440,7 +491,7 @@ async function chatStep(
     },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: STEP_SYSTEM_PROMPT }],
+        parts: [{ text: resolveStepSystemPrompt(mode) }],
       },
       contents,
       generationConfig: {
@@ -468,7 +519,7 @@ async function chatStep(
   return { ...structured, model };
 }
 
-async function planRetrieval(userMessage, history) {
+async function planRetrieval(userMessage, history, { mode } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured.");
@@ -493,6 +544,9 @@ async function planRetrieval(userMessage, history) {
   const model = getRouterModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
+  const retrievalPrompt =
+    mode === "tutor" ? TUTOR_PLAN_RETRIEVAL_SYSTEM_PROMPT : PLAN_RETRIEVAL_SYSTEM_PROMPT;
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -501,7 +555,7 @@ async function planRetrieval(userMessage, history) {
     },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: PLAN_RETRIEVAL_SYSTEM_PROMPT }],
+        parts: [{ text: retrievalPrompt }],
       },
       contents,
       generationConfig: {
@@ -544,4 +598,8 @@ module.exports = {
   getModel,
   getRouterModel,
   RESPONSE_SCHEMA,
+  TUTOR_SYSTEM_PROMPT,
+  TUTOR_PLAN_RETRIEVAL_SYSTEM_PROMPT,
+  resolveSystemPrompt,
+  buildRecipeBlock,
 };
