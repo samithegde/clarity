@@ -38,7 +38,11 @@ let promptLoopActive = false;
 let promptLoopCancelled = false;
 let resolvePromptWait = null;
 let newChatButton = null;
+let sendButton = null;
+let chatInputEl = null;
+let typingIndicatorEl = null;
 let isAiBusy = false;
+let aiCancelled = false;
 let latestScreenContext = null;
 
 class PromptCancelledError extends Error {
@@ -46,6 +50,31 @@ class PromptCancelledError extends Error {
     super("Prompt cancelled.");
     this.name = "PromptCancelledError";
   }
+}
+
+class AiCancelledError extends Error {
+  constructor() {
+    super("Agent cancelled.");
+    this.name = "AiCancelledError";
+  }
+}
+
+function assertNotCancelled() {
+  if (aiCancelled || promptLoopCancelled) {
+    throw new AiCancelledError();
+  }
+}
+
+function cancelAllAgenticActions() {
+  aiCancelled = true;
+  cancelPrompt();
+  window.aiTools?.emitPromptCancelled?.();
+  stopVoiceReaderAudio();
+  window.speechSynthesis?.cancel?.();
+  if (typingIndicatorEl) hideTypingIndicator(typingIndicatorEl);
+  void window.aiTools?.hideNextButton?.();
+  void window.aiTools?.clearHighlights?.();
+  void window.aiTools?.setCursorVisible?.(false);
 }
 
 function getConversationId() {
@@ -71,8 +100,33 @@ function setNewChatButtonDisabled(disabled) {
   newChatButton.disabled = disabled;
 }
 
-function updateNewChatButtonState() {
+function setSendButtonState(button, state) {
+  const icon = button.querySelector(".material-symbols-outlined");
+  button.classList.remove("send-button--pause");
+
+  if (state === "pause") {
+    button.type = "button";
+    button.classList.add("send-button--pause");
+    button.title = "Stop";
+    button.setAttribute("aria-label", "Stop agent");
+    if (icon) icon.textContent = "pause";
+    return;
+  }
+
+  button.type = "submit";
+  button.title = "Send";
+  button.setAttribute("aria-label", "Send");
+  if (icon) icon.textContent = "send";
+}
+
+function updateActionButtonStates() {
   setNewChatButtonDisabled(isAiBusy || promptLoopActive);
+  if (sendButton) {
+    setSendButtonState(sendButton, isAiBusy || promptLoopActive ? "pause" : "send");
+  }
+  if (chatInputEl) {
+    chatInputEl.disabled = isAiBusy || promptLoopActive;
+  }
 }
 
 function updateSyncStatus(state) {
@@ -221,14 +275,14 @@ function beginPromptLoop() {
   promptLoopActive = true;
   promptLoopCancelled = false;
   resolvePromptWait = null;
-  updateNewChatButtonState();
+  updateActionButtonStates();
 }
 
 function resetPromptLoopState() {
   promptLoopActive = false;
   promptLoopCancelled = false;
   resolvePromptWait = null;
-  updateNewChatButtonState();
+  updateActionButtonStates();
 }
 
 function formatFileSize(bytes) {
@@ -943,7 +997,10 @@ async function askGemini() {
       })),
     }));
 
-  return window.geminiChat.send({ history });
+  return window.geminiChat.send({ history }).then((result) => {
+    assertNotCancelled();
+    return result;
+  });
 }
 
 function stopVoiceReaderAudio() {
@@ -966,7 +1023,7 @@ function playBrowserSpeech(text) {
 
 async function speakExplanation(text) {
   const cleanText = String(text ?? "").replace(/\s+/g, " ").trim();
-  if (!cleanText || !getChatAccessibilityPreferences().screenReader) return;
+  if (!cleanText || !getChatAccessibilityPreferences().screenReader || aiCancelled) return;
 
   try {
     if (!window.aiTools?.speakAccessibility) {
@@ -977,6 +1034,7 @@ async function speakExplanation(text) {
     window.speechSynthesis?.cancel?.();
 
     const audio = await window.aiTools.speakAccessibility(cleanText);
+    if (aiCancelled) return;
     if (!audio?.base64) {
       throw new Error("ElevenLabs returned no audio.");
     }
@@ -989,6 +1047,7 @@ async function speakExplanation(text) {
     };
     await currentReaderAudio.play();
   } catch (error) {
+    if (aiCancelled) return;
     console.warn("ElevenLabs chat reader failed:", error);
     playBrowserSpeech(cleanText);
   }
@@ -1017,6 +1076,7 @@ function waitForCompleteClick() {
     });
 
     const unsubCancel = window.aiTools?.onPromptCancelled(() => {
+      aiCancelled = true;
       promptLoopCancelled = true;
       window.aiTools?.hideNextButton?.();
       cleanup();
@@ -1049,6 +1109,7 @@ function waitForNextClick() {
     });
 
     const unsubCancel = window.aiTools?.onPromptCancelled(() => {
+      aiCancelled = true;
       promptLoopCancelled = true;
       window.aiTools?.hideNextButton?.();
       cleanup();
@@ -1067,6 +1128,7 @@ const NEXT_STEP_CLICK_RADIUS = 10;
 
 async function refineStepCoordinates(step) {
   const base64 = await captureScreenBase64();
+  assertNotCancelled();
   if (!base64) return step;
 
   const anchor = step.markBBox || {
@@ -1191,15 +1253,16 @@ async function executeHybridLoop(goal, firstStep) {
   let prefetchedCapture = null;
 
   try {
-    while (currentStep && stepNumber <= MAX_HYBRID_STEPS && !promptLoopCancelled) {
+    while (currentStep && stepNumber <= MAX_HYBRID_STEPS && !promptLoopCancelled && !aiCancelled) {
       const resolvedStep = resolveStepBBox(currentStep);
       if (!resolvedStep) {
         logLocalization({ coarseMethod: "unresolved", refineMethod: "skipped" });
         break;
       }
       const refinedStep = await refineStepCoordinates(resolvedStep);
+      assertNotCancelled();
       await executeSingleStep(refinedStep, { stepIndex: stepNumber });
-      if (promptLoopCancelled) break;
+      if (promptLoopCancelled || aiCancelled) break;
 
       prefetchedCapture = captureScreenBase64();
 
@@ -1230,18 +1293,20 @@ async function executeHybridLoop(goal, firstStep) {
         throw error;
       }
 
-      if (promptLoopCancelled) break;
+      if (promptLoopCancelled || aiCancelled) break;
 
       const screenshotBase64 = prefetchedCapture
         ? await prefetchedCapture
         : await captureScreenBase64();
       prefetchedCapture = null;
+      assertNotCancelled();
 
       const response = await window.geminiChat.step({
         goal,
         lastAction: currentStep.description || currentStep.label || "",
         screenshotBase64,
       });
+      assertNotCancelled();
 
       const nextPlan = Array.isArray(response?.plan) ? response.plan : [];
       currentStep = nextPlan[0] ?? null;
@@ -1272,10 +1337,13 @@ async function executeHybridLoop(goal, firstStep) {
 
 async function handleAiCommand(text) {
   try {
+    if (aiCancelled) return null;
+
     const commandReply = await runCommand(text);
     if (commandReply) return { text: commandReply };
 
     const response = await askGemini();
+    assertNotCancelled();
     const explanation = (response?.explanation || "").trim();
     const plan = Array.isArray(response?.plan) ? response.plan : [];
 
@@ -1284,9 +1352,11 @@ async function handleAiCommand(text) {
     }
 
     speakExplanation(explanation);
+    assertNotCancelled();
 
     const firstStep = plan[0] ?? null;
     await executeHybridLoop(text, firstStep);
+    assertNotCancelled();
 
     const retrieval = response?.retrieval;
     const sourceNote =
@@ -1300,6 +1370,13 @@ async function handleAiCommand(text) {
       rawResponse: response?.text || JSON.stringify({ explanation, plan }),
     };
   } catch (error) {
+    if (
+      error instanceof AiCancelledError ||
+      error instanceof PromptCancelledError ||
+      aiCancelled
+    ) {
+      return null;
+    }
     return { text: `AI error: ${error.message}` };
   }
 }
@@ -1468,6 +1545,9 @@ export function initChat() {
   const typingIndicator = document.getElementById("typing-indicator");
 
   newChatButton = document.getElementById("new-chat-button");
+  sendButton = document.getElementById("send-button");
+  chatInputEl = chatInput;
+  typingIndicatorEl = typingIndicator;
 
   initChatResizeGrip();
   void bootstrapChat(messagesEl, typingIndicator);
@@ -1542,10 +1622,19 @@ export function initChat() {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
 
+    if (isAiBusy || promptLoopActive) {
+      cancelAllAgenticActions();
+      return;
+    }
+
     const text = chatInput.value.trim();
     const fileAttachments = pendingAttachments.map((attachment) => ({ ...attachment }));
 
     if (!text && !fileAttachments.length) return;
+
+    aiCancelled = false;
+    isAiBusy = true;
+    updateActionButtonStates();
 
     chatInput.value = "";
     clearPendingAttachments();
@@ -1562,6 +1651,8 @@ export function initChat() {
 
     if (!text && !attachments.length) {
       hideTypingIndicator(typingIndicator);
+      isAiBusy = false;
+      updateActionButtonStates();
       return;
     }
 
@@ -1571,18 +1662,14 @@ export function initChat() {
     saveChatMessage(userMessage);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
-    isAiBusy = true;
-    updateNewChatButtonState();
-
     let aiReply;
     try {
       aiReply = await handleAiCommand(text);
     } finally {
       isAiBusy = false;
-      updateNewChatButtonState();
+      updateActionButtonStates();
+      hideTypingIndicator(typingIndicator);
     }
-
-    hideTypingIndicator(typingIndicator);
 
     if (aiReply?.text) {
       const assistantMessage = createMessage({
@@ -1597,6 +1684,13 @@ export function initChat() {
     }
 
     chatInput.focus();
+  });
+
+  sendButton?.addEventListener("click", (event) => {
+    if (isAiBusy || promptLoopActive) {
+      event.preventDefault();
+      cancelAllAgenticActions();
+    }
   });
 
   micButton.addEventListener("click", async () => {

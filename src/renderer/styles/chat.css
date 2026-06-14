@@ -575,6 +575,15 @@
   transform: scale(0.9);
 }
 
+.send-button--pause {
+  background: rgba(124, 58, 237, 0.75);
+  box-shadow: 0 10px 15px -3px rgba(124, 58, 237, 0.15);
+}
+
+.send-button--pause:hover {
+  background: rgba(124, 58, 237, 0.65);
+}
+
 .mic-button.recording {
   color: #f87171 !important;
 }
