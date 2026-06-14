@@ -1435,7 +1435,6 @@ async function executeHybridLoop(goal, firstStep) {
 
   let currentStep = firstStep;
   let stepNumber = 1;
-  let prefetchedCapture = null;
   const completedActions = [];
 
   try {
@@ -1487,6 +1486,17 @@ async function executeHybridLoop(goal, firstStep) {
       // Capture AFTER the user has done the action so Gemini sees the updated screen.
       const screenshotBase64 = await captureScreenBase64();
       assertNotCancelled();
+
+      void logChatActivity({
+        phase: "model.request",
+        message: `Planning next step after "${(currentStep.description || currentStep.label || "").slice(0, 120)}".`,
+        detail: {
+          goal: goal.slice(0, 160),
+          hasScreenshot: Boolean(screenshotBase64),
+          completedStepCount: completedActions.length,
+          mode: tutorMode ? "tutor" : "navigation",
+        },
+      });
 
       const response = await window.geminiChat.step({
         goal,

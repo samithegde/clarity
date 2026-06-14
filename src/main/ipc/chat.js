@@ -459,21 +459,91 @@ function registerChatIpc(ipcMain) {
 
 
   ipcMain.handle("chat:step", async (_event, payload) => {
-
     const startedAt = Date.now();
-
-    const { goal, lastAction, screenshotBase64, completedActions, activitySessionId: payloadSessionId } =
-
-      payload ?? {};
+    const {
+      goal,
+      lastAction,
+      screenshotBase64,
+      completedActions,
+      activitySessionId: payloadSessionId,
+      mode: payloadMode,
+    } = payload ?? {};
 
     if (!goal) {
-
       throw new Error("goal is required.");
     }
 
-    return chatStep(goal, lastAction ?? "", screenshotBase64 ?? null, {
-      recipe: sessionRecipe,
+    const mode = payloadMode === "tutor" ? "tutor" : sessionMode ?? "navigation";
+    const sessionId = payloadSessionId || activitySessionId;
+    const provider = getActiveProvider();
+    const completedStepCount = Array.isArray(completedActions)
+      ? completedActions.length
+      : 0;
+
+    recordActivity({
+      sessionId,
+      phase: "model.request",
+      message: `Planning next step after "${truncate(lastAction ?? "", 120)}".`,
+      detail: {
+        goal: truncate(goal, 160),
+        hasScreenshot: Boolean(screenshotBase64),
+        completedStepCount,
+        provider,
+        mode,
+      },
     });
+
+    try {
+      const result = await chatStep(goal, lastAction ?? "", screenshotBase64 ?? null, {
+        recipe: sessionRecipe,
+        mode,
+        completedActions,
+      });
+
+      logModelResponse(sessionId, result, { phase: "model.response" });
+
+      recordChatEvent({
+        event: "chat.step",
+        success: true,
+        provider,
+        model: result.model,
+        mode,
+        durationMs: Date.now() - startedAt,
+        meta: {
+          goalLength: goal.length,
+          lastActionLength: (lastAction ?? "").length,
+          planLength: result.plan?.length ?? 0,
+          hasScreenshot: Boolean(screenshotBase64),
+          completedStepCount,
+        },
+      });
+
+      return result;
+    } catch (error) {
+      recordActivity({
+        sessionId,
+        phase: "error",
+        level: "error",
+        message: `Step planning failed: ${error.message}`,
+        detail: error.rawResponse ? { raw: error.rawResponse } : null,
+      });
+
+      recordChatEvent({
+        event: "chat.step",
+        success: false,
+        provider,
+        mode,
+        durationMs: Date.now() - startedAt,
+        error: error.message,
+        meta: {
+          goalLength: goal.length,
+          hasScreenshot: Boolean(screenshotBase64),
+          completedStepCount,
+        },
+      });
+
+      throw error;
+    }
   });
 }
 
