@@ -1,5 +1,6 @@
 import { getCaptureServices } from "./capture-service.js";
 import { getChatAccessibilityPreferences } from "./chat-accessibility.js";
+import { announceAccessibilityMessage } from "./accessibility.js";
 import { cropBase64Image } from "./context-crop.js";
 import { renderMarkdown } from "./markdown.js";
 
@@ -762,14 +763,43 @@ function setMicButtonState(button, state) {
   if (icon) icon.textContent = "mic";
 }
 
-function showTypingIndicator(typingIndicator) {
+const TYPING_LABEL_DEFAULT = "Clarity is thinking…";
+const TYPING_LABEL_SEARCHING = "Searching docs…";
+
+function setTypingIndicatorLabel(label) {
+  const labelEl = document.getElementById("typing-indicator-label");
+  if (labelEl) {
+    labelEl.textContent = label || TYPING_LABEL_DEFAULT;
+  }
+}
+
+function showTypingIndicator(typingIndicator, label = TYPING_LABEL_DEFAULT) {
+  setTypingIndicatorLabel(label);
   typingIndicator.classList.remove("hidden");
   typingIndicator.setAttribute("aria-hidden", "false");
 }
 
 function hideTypingIndicator(typingIndicator) {
+  setTypingIndicatorLabel(TYPING_LABEL_DEFAULT);
   typingIndicator.classList.add("hidden");
   typingIndicator.setAttribute("aria-hidden", "true");
+}
+
+function bindRagStatusListener() {
+  if (!window.geminiChat?.onRagStatus) return;
+  window.geminiChat.onRagStatus(({ phase } = {}) => {
+    if (!typingIndicatorEl || typingIndicatorEl.classList.contains("hidden")) {
+      return;
+    }
+    if (phase === "searching") {
+      setTypingIndicatorLabel(TYPING_LABEL_SEARCHING);
+      void announceAccessibilityMessage(TYPING_LABEL_SEARCHING);
+    } else if (phase === "routing") {
+      setTypingIndicatorLabel(TYPING_LABEL_DEFAULT);
+    } else if (phase === "idle") {
+      setTypingIndicatorLabel(TYPING_LABEL_DEFAULT);
+    }
+  });
 }
 
 function pushSystemMessage(messagesEl, typingIndicator, text) {
@@ -1359,9 +1389,15 @@ async function handleAiCommand(text) {
     assertNotCancelled();
 
     const retrieval = response?.retrieval;
+    const via =
+      retrieval?.retrievalSource === "context7"
+        ? "Context7"
+        : retrieval?.retrievalSource === "web"
+          ? "Web"
+          : "";
     const sourceNote =
       retrieval?.sources?.length
-        ? `\n\n*Sources: ${retrieval.sources.join(", ")}*`
+        ? `\n\n*Sources${via ? ` (${via})` : ""}: ${retrieval.sources.join(", ")}*`
         : "";
 
     return {
@@ -1550,6 +1586,7 @@ export function initChat() {
   typingIndicatorEl = typingIndicator;
 
   initChatResizeGrip();
+  bindRagStatusListener();
   void bootstrapChat(messagesEl, typingIndicator);
 
   chatInput.addEventListener("mousedown", () => {

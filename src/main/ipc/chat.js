@@ -1,7 +1,7 @@
 const { chat, chatStep, planRetrieval } = require("../gemini/service");
-const { retrieve } = require("../rag/retrieve");
-const { resolveCollection } = require("../rag/collections");
-const { getStats } = require("../rag/store");
+const { retrieve, getProviderStatus } = require("../rag/retrieve");
+const { routeIntentHeuristic } = require("../rag/heuristics");
+const { getChatWindow } = require("../window");
 
 let sessionRecipe = null;
 
@@ -9,27 +9,67 @@ function isRagEnabled() {
   return process.env.RAG_ENABLED !== "false";
 }
 
-async function buildRecipe(userText, history) {
+function emitRagStatus(phase, extra = {}) {
+  const chatWin = getChatWindow();
+  if (!chatWin || chatWin.isDestroyed()) return;
+  chatWin.webContents.send("chat:rag-status", { phase, ...extra });
+}
+
+async function buildRecipe(userText, history, { onPhase } = {}) {
   if (!isRagEnabled() || !userText) return null;
 
-  try {
-    const stats = getStats();
-    if (stats.totalChunks === 0) return null;
+  const providers = getProviderStatus();
+  if (!providers.context7 && !providers.webSearch) {
+    console.warn("[RAG] No remote providers configured (CONTEXT7_API_KEY or TAVILY_API_KEY)");
+    return null;
+  }
 
-    const plan = await planRetrieval(userText, history);
-    const collection = resolveCollection(plan.targetApp);
-    const topK = Number(process.env.RAG_TOP_K) || 5;
-    const chunks = await retrieve(plan.ragQuery, { topK, collection });
+  try {
+    const heuristic = routeIntentHeuristic(userText);
+    let plan;
+
+    if (heuristic.skip) {
+      plan = heuristic.plan;
+    } else {
+      onPhase?.("routing");
+      emitRagStatus("routing");
+      plan = await planRetrieval(userText, history);
+    }
+
+    if (!plan.requiresRag) {
+      onPhase?.("idle");
+      emitRagStatus("idle");
+      return null;
+    }
+
+    const ragQuery = (plan.query || plan.ragQuery || "").trim();
+    if (!ragQuery) {
+      onPhase?.("idle");
+      emitRagStatus("idle");
+      return null;
+    }
+
+    onPhase?.("searching");
+    emitRagStatus("searching", {
+      source: plan.retrievalSource || "web",
+    });
+
+    const chunks = await retrieve(plan);
+
+    onPhase?.("idle");
+    emitRagStatus("idle");
 
     if (!chunks.length) return null;
 
     return {
       intent: plan.intent,
-      ragQuery: plan.ragQuery,
+      ragQuery,
+      retrievalSource: plan.retrievalSource,
       needsOnScreenGuidance: plan.needsOnScreenGuidance,
       chunks,
     };
   } catch (err) {
+    emitRagStatus("idle");
     console.error("[RAG] retrieval failed:", err.message);
     return null;
   }
@@ -63,4 +103,4 @@ function registerChatIpc(ipcMain) {
   });
 }
 
-module.exports = { registerChatIpc };
+module.exports = { registerChatIpc, buildRecipe };

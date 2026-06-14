@@ -441,9 +441,21 @@
 }
 
 .typing-bubble {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   padding: 12px 16px;
   border-radius: 1rem;
+}
+
+.typing-indicator-label {
+  color: #c4b5fd;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
+
+.typing-indicator-label:empty {
+  display: none;
 }
 
 .typing-dots {

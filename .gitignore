@@ -49,3 +49,9 @@ coverage/
 # Caches
 .cache/
 .local/
+
+# RAG indexes and local model cache
+data/rag-index.json
+data/rag-manifest.json
+data/lancedb/
+data/transformers-cache/

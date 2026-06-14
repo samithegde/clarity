@@ -20,6 +20,7 @@ import {
   hideTypingIndicator,
   renderMessages,
   showTypingIndicator,
+  bindRagStatusListener,
 } from "./render.js";
 import {
   isAiBusy,
@@ -58,6 +59,7 @@ export function initChat() {
   setNewChatButton(document.getElementById("new-chat-button"));
 
   initChatResizeGrip();
+  bindRagStatusListener(typingIndicator);
   void bootstrapChat(messagesEl, typingIndicator);
 
   chatInput.addEventListener("mousedown", () => {

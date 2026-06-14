@@ -342,9 +342,15 @@ export async function handleAiCommand(text) {
     await executeHybridLoop(text, firstStep);
 
     const retrieval = response?.retrieval;
+    const via =
+      retrieval?.retrievalSource === "context7"
+        ? "Context7"
+        : retrieval?.retrievalSource === "web"
+          ? "Web"
+          : "";
     const sourceNote =
       retrieval?.sources?.length
-        ? `\n\n*Sources: ${retrieval.sources.join(", ")}*`
+        ? `\n\n*Sources${via ? ` (${via})` : ""}: ${retrieval.sources.join(", ")}*`
         : "";
 
     return {

@@ -1,18 +1,26 @@
-const path = require("path");
-const { ingestDocs } = require("../rag/ingest");
-const { getStats } = require("../rag/store");
+const { retrieve, getProviderStatus } = require("../rag/retrieve");
 
 function registerRagIpc(ipcMain) {
   ipcMain.handle("rag:status", async () => {
-    return getStats();
+    return getProviderStatus();
   });
 
-  ipcMain.handle("rag:ingest", async (_event, payload) => {
-    const docsPath =
-      payload?.docsPath ||
-      process.env.RAG_DOCS_PATH ||
-      path.join(process.cwd(), "docs");
-    return ingestDocs(docsPath);
+  ipcMain.handle("rag:search", async (_event, payload) => {
+    const query = String(payload?.query || "").trim();
+    if (!query) {
+      throw new Error("query is required.");
+    }
+
+    const retrievalSource =
+      payload?.retrievalSource === "context7" ? "context7" : "web";
+
+    return retrieve({
+      requiresRag: true,
+      query,
+      ragQuery: query,
+      retrievalSource,
+      libraryName: payload?.libraryName,
+    });
   });
 }
 

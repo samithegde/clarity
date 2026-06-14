@@ -91,6 +91,16 @@ const PLAN_RETRIEVAL_SCHEMA = {
       type: "STRING",
       description: "Concise statement of what the user wants to accomplish.",
     },
+    requiresRag: {
+      type: "BOOLEAN",
+      description:
+        "True when the user needs external knowledge from documents (policies, wikis, how-to guides). False for pure UI navigation like clicking buttons or highlighting elements.",
+    },
+    query: {
+      type: "STRING",
+      description:
+        "Summarized search query for retrieval when requiresRag is true; empty string otherwise.",
+    },
     ragQuery: {
       type: "STRING",
       description:
@@ -106,17 +116,32 @@ const PLAN_RETRIEVAL_SCHEMA = {
       description:
         "The application the user is working in, if identifiable (e.g. 'Google Docs', 'Figma', 'VS Code').",
     },
+    retrievalSource: {
+      type: "STRING",
+      description:
+        "Where to fetch knowledge when requiresRag is true: 'context7' for library/framework/API documentation (React, Figma, npm packages); 'web' for policies, wikis, company docs, or general factual lookup.",
+    },
+    libraryName: {
+      type: "STRING",
+      description:
+        "When retrievalSource is 'context7', the library or product name to search (e.g. 'react', 'figma', 'next.js'). Omit for web search.",
+    },
   },
-  required: ["intent", "ragQuery", "needsOnScreenGuidance"],
+  required: ["intent", "requiresRag", "query", "needsOnScreenGuidance", "retrievalSource"],
 };
 
 const PLAN_RETRIEVAL_SYSTEM_PROMPT =
-  "You are an intent parser for a screen-navigation assistant called Clarity. " +
-  "Given the user's latest message and conversation history, produce a JSON object with: " +
-  "intent (concise statement of what the user wants to accomplish), " +
-  "ragQuery (an optimized search query for a how-to knowledge base — rephrase the request as a question), " +
-  "needsOnScreenGuidance (true when the user needs step-by-step UI navigation; false for greetings or pure Q&A), " +
-  "targetApp (the application the user is working in if detectable, otherwise omit).";
+  "You are an intent router for a screen-navigation assistant called Clarity. " +
+  "Given the user's latest message and conversation history, produce JSON with: " +
+  "intent (concise statement of what the user wants), " +
+  "requiresRag (true when external knowledge is needed; false for pure UI actions like 'Click Submit'), " +
+  "query (optimized retrieval query when requiresRag is true; empty when false), " +
+  "ragQuery (same as query), " +
+  "needsOnScreenGuidance (true when step-by-step UI navigation is needed), " +
+  "targetApp (application if detectable), " +
+  "retrievalSource ('context7' for library/framework/API docs — React, Next.js, Figma API, npm packages; 'web' for company policies, HR wikis, general facts, or anything not in a code library), " +
+  "libraryName (required when retrievalSource is 'context7' — e.g. 'react', 'figma', 'google docs'). " +
+  "Examples: 'Click Submit' → requiresRag false; 'How do I use React useEffect?' → requiresRag true, retrievalSource context7, libraryName react; 'Fill form using vacation policy' → requiresRag true, retrievalSource web.";
 
 function getApiKey() {
   return (
@@ -132,6 +157,34 @@ function getModel() {
     process.env.GEMENI_MODEL?.trim() ||
     DEFAULT_MODEL
   );
+}
+
+function getRouterModel() {
+  return (
+    process.env.RAG_ROUTER_MODEL?.trim() ||
+    process.env.GEMINI_MODEL?.trim() ||
+    process.env.GEMENI_MODEL?.trim() ||
+    "gemini-2.0-flash-lite"
+  );
+}
+
+function normalizeRetrievalPlan(parsed, userMessage) {
+  const requiresRag = Boolean(parsed?.requiresRag);
+  const query = String(parsed?.query || parsed?.ragQuery || "").trim();
+  const rawSource = String(parsed?.retrievalSource || "").trim().toLowerCase();
+  const retrievalSource = rawSource === "context7" ? "context7" : "web";
+  const libraryName = String(parsed?.libraryName || parsed?.targetApp || "").trim() || undefined;
+
+  return {
+    intent: String(parsed?.intent || userMessage).trim(),
+    requiresRag,
+    query: requiresRag ? query || userMessage : "",
+    ragQuery: requiresRag ? query || userMessage : "",
+    needsOnScreenGuidance: parsed?.needsOnScreenGuidance !== false,
+    targetApp: parsed?.targetApp || undefined,
+    retrievalSource: requiresRag ? retrievalSource : undefined,
+    libraryName: requiresRag && retrievalSource === "context7" ? libraryName : undefined,
+  };
 }
 
 function toGeminiParts(msg) {
@@ -262,11 +315,10 @@ function buildRecipeBlock(recipe) {
     .join("\n\n---\n\n");
 
   return (
-    "\n\n[WORKFLOW KNOWLEDGE BASE]\n" +
+    "\n\n[EXTERNAL KNOWLEDGE]\n" +
     sections +
-    "\n\n[INSTRUCTION] The knowledge base above contains step-by-step recipes. " +
-    "When building your plan, locate the SPECIFIC UI elements named in the recipe (menus, buttons, shortcuts). " +
-    "Follow the recipe steps — do not guess workflow steps not described in the recipe."
+    "\n\n[INSTRUCTION] The excerpts above were retrieved from live documentation or web sources. " +
+    "Use them to answer accurately. When building a UI plan, follow steps described in the sources — do not invent steps not supported by the retrieved content."
   );
 }
 
@@ -324,6 +376,7 @@ async function chat(history, { recipe } = {}) {
   const retrieval = recipe
     ? {
         ragQuery: recipe.ragQuery,
+        retrievalSource: recipe.retrievalSource,
         sources: [...new Set(recipe.chunks.map((c) => c.source))],
       }
     : null;
@@ -437,7 +490,7 @@ async function planRetrieval(userMessage, history) {
     { role: "user", parts: [{ text: `Latest user message: ${userMessage}` }] },
   ];
 
-  const model = getModel();
+  const model = getRouterModel();
   const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
   const response = await fetch(url, {
@@ -467,13 +520,17 @@ async function planRetrieval(userMessage, history) {
 
   const text = extractText(payload);
   try {
-    return JSON.parse(text);
+    return normalizeRetrievalPlan(JSON.parse(text), userMessage);
   } catch {
-    return {
-      intent: userMessage,
-      ragQuery: userMessage,
-      needsOnScreenGuidance: true,
-    };
+    return normalizeRetrievalPlan(
+      {
+        intent: userMessage,
+        requiresRag: false,
+        query: "",
+        needsOnScreenGuidance: true,
+      },
+      userMessage,
+    );
   }
 }
 
@@ -482,7 +539,9 @@ module.exports = {
   chatStep,
   planRetrieval,
   normalizePlanItem,
+  normalizeRetrievalPlan,
   getApiKey,
   getModel,
+  getRouterModel,
   RESPONSE_SCHEMA,
 };

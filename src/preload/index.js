@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld("whisper", {
 contextBridge.exposeInMainWorld("geminiChat", {
   send: (payload) => ipcRenderer.invoke("chat:send", payload),
   step: (payload) => ipcRenderer.invoke("chat:step", payload),
+  onRagStatus: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("chat:rag-status", handler);
+    return () => ipcRenderer.removeListener("chat:rag-status", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("localization", {
@@ -38,8 +43,8 @@ contextBridge.exposeInMainWorld("chatHistory", {
 });
 
 contextBridge.exposeInMainWorld("ragKb", {
-  ingest: (payload) => ipcRenderer.invoke("rag:ingest", payload),
   status: () => ipcRenderer.invoke("rag:status"),
+  search: (payload) => ipcRenderer.invoke("rag:search", payload),
 });
 
 contextBridge.exposeInMainWorld("chatWindow", {
