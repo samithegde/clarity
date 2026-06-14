@@ -2,6 +2,8 @@ import { playAudioCue } from "./accessibility.js";
 
 const DEFAULT_COLOR = "rgba(250, 204, 21, 0.35)";
 const DEFAULT_BORDER = "rgba(250, 204, 21, 0.95)";
+const TUTOR_COLOR = "rgba(99, 102, 241, 0.25)";
+const TUTOR_BORDER = "rgba(129, 140, 248, 0.95)";
 const DEFAULT_STROKE_WIDTH = 4;
 const HIGH_CONTRAST_COLOR = "rgba(0, 0, 0, 0.2)";
 const HIGH_CONTRAST_BORDER = "rgba(255, 255, 0, 1)";
@@ -68,16 +70,18 @@ export function initHighlighter() {
   }
 
   window.aiTools?.onHighlightRect((payload) => {
+    const isTutor = payload.style === "tutor";
     addShape({
       type: "rect",
       x: payload.x,
       y: payload.y,
       width: payload.width,
       height: payload.height,
-      fill: payload.fill ?? DEFAULT_COLOR,
-      stroke: payload.stroke ?? DEFAULT_BORDER,
-      lineWidth: payload.lineWidth ?? 3,
+      fill: payload.fill ?? (isTutor ? TUTOR_COLOR : DEFAULT_COLOR),
+      stroke: payload.stroke ?? (isTutor ? TUTOR_BORDER : DEFAULT_BORDER),
+      lineWidth: payload.lineWidth ?? (isTutor ? 4 : 3),
       duration: payload.duration ?? 0,
+      style: payload.style,
     });
   });
 

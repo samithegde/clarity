@@ -2,6 +2,8 @@ const { BrowserWindow, screen } = require("electron");
 const path = require("path");
 const { getWorkAreaBounds } = require("./utils/display");
 const { setNoRedirectionBitmap } = require("./utils/win32-chrome");
+const { hideNativeTitleBar } = require("./utils/win32-chrome");
+const { getTutorAnnotations } = require("./annotations/store");
 
 const CHAT_WIDTH = 420;
 const CHAT_HEIGHT = 650;
@@ -177,6 +179,7 @@ function createOverlayWindowForDisplay(display) {
 
   overlayWin.webContents.once("did-finish-load", () => {
     broadcastOverlayAccessibilityPreferences();
+    void replayTutorAnnotationsForOverlay(overlayWin);
   });
 
   overlayWin.webContents.on("page-title-updated", (event) => {
@@ -285,7 +288,7 @@ function createMiniChatWindow() {
     transparent: true,
     resizable: false,
     movable: false,
-    focusable: false,
+    focusable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
@@ -733,6 +736,27 @@ function toDisplayLocalCoords(bounds, payload) {
   return local;
 }
 
+async function replayTutorAnnotationsForOverlay(overlayWin) {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+
+  const annotations = getTutorAnnotations();
+  if (!annotations.length) return;
+
+  for (const annotation of annotations) {
+    const x = Number(annotation.x);
+    const y = Number(annotation.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+    const display = findDisplayForPoint(x, y) ?? screen.getPrimaryDisplay();
+    if (display.id !== overlayWin.displayId) continue;
+
+    overlayWin.webContents.send(
+      "ai:highlighter:rect",
+      toDisplayLocalCoords(display.bounds, annotation),
+    );
+  }
+}
+
 async function sendOverlayPointAction(channel, payload = {}) {
   await showOverlay();
 
@@ -876,6 +900,7 @@ module.exports = {
   showOverlay,
   hideOverlay,
   hideOverlayWindowsOnly,
+  replayTutorAnnotationsForOverlay,
   minimizeDashboard,
   closeDashboard,
 };

@@ -8,6 +8,10 @@ const { restoreWindowsTaskbar } = require("./utils/taskbar");
 const { configureCaptureSession } = require("./capture/session");
 const { closeMongoConnection } = require("./mongodb/chat-history");
 const { logMoondreamStartupStatus } = require("./localization/moondream-service");
+const { getActiveProvider } = require("./ai/provider");
+const ollama = require("./ollama/service");
+const gemini = require("./gemini/service");
+const groq = require("./groq/service");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, "../../.env");
@@ -29,6 +33,28 @@ function loadEnvFile() {
 }
 
 loadEnvFile();
+
+function logLlmStartupStatus() {
+  const provider = getActiveProvider();
+  if (provider === "ollama") {
+    console.log(
+      `[LLM] Using Ollama (${ollama.getModel()} @ ${ollama.getBaseUrl()}). Set USE_GEMINI_MODEL=true to switch back to Gemini.`,
+    );
+    void ollama.verifyModelReady();
+    return;
+  }
+
+  console.log(`[LLM] Using Gemini (${gemini.getModel()}).`);
+  if (groq.isConfigured()) {
+    console.log(`[LLM] Groq tutor widget implementation enabled (${groq.getModel()}).`);
+  } else {
+    console.log(
+      "[LLM] GROQ_API_KEY not set — interactive tutor widgets will fall back to classic explanations.",
+    );
+  }
+}
+
+logLlmStartupStatus();
 registerIpcHandlers(ipcMain);
 let tray = null;
 let isQuitting = false;

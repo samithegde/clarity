@@ -72,6 +72,26 @@
         </div>
         <div class="chat-header-actions">
           <button
+            id="activity-log-toggle"
+            class="icon-button"
+            type="button"
+            title="Activity log"
+            aria-label="Toggle activity log"
+            aria-pressed="false"
+          >
+            <span class="material-symbols-outlined">neurology</span>
+          </button>
+          <button
+            id="tutor-mode-toggle"
+            class="icon-button tutor-mode-toggle"
+            type="button"
+            title="Tutor mode"
+            aria-label="Toggle tutor mode"
+            aria-pressed="false"
+          >
+            <span class="material-symbols-outlined">school</span>
+          </button>
+          <button
             id="tasks-popup-button"
             class="icon-button"
             type="button"
@@ -113,6 +133,7 @@
       <main id="messages" class="messages" aria-live="polite">
         <div id="typing-indicator" class="typing-indicator hidden" aria-hidden="true">
           <div class="ai-bubble typing-bubble">
+            <span id="typing-indicator-label" class="typing-indicator-label">Clarity is thinking…</span>
             <div class="typing-dots">
               <div class="typing-dot"></div>
               <div class="typing-dot typing-dot--delay-1"></div>
@@ -121,6 +142,25 @@
           </div>
         </div>
       </main>
+
+      <section
+        id="activity-log-panel"
+        class="activity-log-panel hidden"
+        aria-label="AI activity log"
+      >
+        <div class="activity-log-header">
+          <span class="activity-log-title">AI Activity</span>
+          <button
+            id="activity-log-clear"
+            class="activity-log-clear"
+            type="button"
+            title="Clear activity log"
+          >
+            Clear
+          </button>
+        </div>
+        <div id="activity-log-list" class="activity-log-list"></div>
+      </section>
 
       <footer class="chat-footer">
         <div id="attachment-preview" class="attachment-preview hidden" aria-live="polite"></div>

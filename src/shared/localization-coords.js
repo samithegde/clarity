@@ -77,9 +77,35 @@ function mapBBoxCenterToScreen(step) {
   return { ...step, x: centerX, y: centerY };
 }
 
+function mapCropBboxToScreen(bbox, crop, step = {}) {
+  const localX = Number(bbox?.x);
+  const localY = Number(bbox?.y);
+  const localW = Number(bbox?.w ?? bbox?.width);
+  const localH = Number(bbox?.h ?? bbox?.height);
+  if (![localX, localY, localW, localH].every(Number.isFinite) || localW <= 0 || localH <= 0) {
+    return null;
+  }
+
+  const dpr = Number(crop?.dpr) || 1;
+  const scaleX = Number(crop?.scaleX) || 1;
+  const scaleY = Number(crop?.scaleY) || 1;
+  const x1 = Number(crop?.x1) || 0;
+  const y1 = Number(crop?.y1) || 0;
+
+  return {
+    ...step,
+    action: "highlight",
+    x: Math.round((x1 + localX) / (dpr * scaleX)),
+    y: Math.round((y1 + localY) / (dpr * scaleY)),
+    w: Math.max(1, Math.round(localW / (dpr * scaleX))),
+    h: Math.max(1, Math.round(localH / (dpr * scaleY))),
+  };
+}
+
 module.exports = {
   parseBboxArray,
   bboxPercentToCss,
   mapCropPointToScreen,
   mapBBoxCenterToScreen,
+  mapCropBboxToScreen,
 };

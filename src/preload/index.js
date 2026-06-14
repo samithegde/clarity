@@ -20,6 +20,26 @@ contextBridge.exposeInMainWorld("whisper", {
 contextBridge.exposeInMainWorld("geminiChat", {
   send: (payload) => ipcRenderer.invoke("chat:send", payload),
   step: (payload) => ipcRenderer.invoke("chat:step", payload),
+  onRagStatus: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("chat:rag-status", handler);
+    return () => ipcRenderer.removeListener("chat:rag-status", handler);
+  },
+});
+
+contextBridge.exposeInMainWorld("chatTelemetry", {
+  status: () => ipcRenderer.invoke("telemetry:chat:status"),
+  summary: (payload) => ipcRenderer.invoke("telemetry:chat:summary", payload),
+  recent: (payload) => ipcRenderer.invoke("telemetry:chat:recent", payload),
+  activityRecent: (payload) =>
+    ipcRenderer.invoke("telemetry:chat:activity:recent", payload),
+  recordActivity: (payload) =>
+    ipcRenderer.invoke("telemetry:chat:activity:record", payload),
+  onActivity: (callback) => {
+    const handler = (_event, entry) => callback(entry);
+    ipcRenderer.on("telemetry:chat:activity", handler);
+    return () => ipcRenderer.removeListener("telemetry:chat:activity", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("localization", {
@@ -28,6 +48,8 @@ contextBridge.exposeInMainWorld("localization", {
   ocrCrop: (payload) => ipcRenderer.invoke("localization:ocr-crop", payload),
   moondreamPoint: (payload) =>
     ipcRenderer.invoke("localization:moondream-point", payload),
+  moondreamDetect: (payload) =>
+    ipcRenderer.invoke("localization:moondream-detect", payload),
 });
 
 contextBridge.exposeInMainWorld("chatHistory", {
@@ -38,8 +60,8 @@ contextBridge.exposeInMainWorld("chatHistory", {
 });
 
 contextBridge.exposeInMainWorld("ragKb", {
-  ingest: (payload) => ipcRenderer.invoke("rag:ingest", payload),
   status: () => ipcRenderer.invoke("rag:status"),
+  search: (payload) => ipcRenderer.invoke("rag:search", payload),
 });
 
 contextBridge.exposeInMainWorld("chatWindow", {
@@ -99,6 +121,9 @@ contextBridge.exposeInMainWorld("aiTools", {
   highlightStroke: (payload) =>
     ipcRenderer.invoke("ai-tools:highlighter-stroke", payload),
   clearHighlights: () => ipcRenderer.invoke("ai-tools:highlighter-clear"),
+  setAnnotations: (items) => ipcRenderer.invoke("annotations:set", items),
+  clearAnnotations: () => ipcRenderer.invoke("annotations:clear"),
+  replayAnnotations: () => ipcRenderer.invoke("annotations:replay"),
   showNextButton: (payload) => ipcRenderer.invoke("ai-tools:show-next-button", payload),
   hideNextButton: () => ipcRenderer.invoke("ai-tools:hide-next-button"),
   showCompleteButton: () => ipcRenderer.invoke("ai-tools:show-complete-button"),
@@ -164,6 +189,19 @@ contextBridge.exposeInMainWorld("aiTools", {
     const handler = () => callback();
     ipcRenderer.on("ai:highlighter:clear", handler);
     return () => ipcRenderer.removeListener("ai:highlighter:clear", handler);
+  },
+  showLearningWidget: (payload) =>
+    ipcRenderer.invoke("ai-tools:learning-widget-show", payload),
+  hideLearningWidget: () => ipcRenderer.invoke("ai-tools:learning-widget-hide"),
+  onLearningWidgetShow: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("ai:learning-widget:show", handler);
+    return () => ipcRenderer.removeListener("ai:learning-widget:show", handler);
+  },
+  onLearningWidgetHide: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("ai:learning-widget:hide", handler);
+    return () => ipcRenderer.removeListener("ai:learning-widget:hide", handler);
   },
   onAccessibilityPreferencesChanged: (callback) => {
     const handler = (_event, preferences) => callback(preferences);

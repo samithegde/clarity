@@ -113,3 +113,44 @@ Tell the model to:
 - Order `plan` steps in the sequence the user should follow.
 - Use `cursor` for guidance movement and `highlight` for box emphasis.
 - Treat `description` as the primary field for what the pointer is targeting.
+
+## Tutor mode (`mode: "tutor"`)
+
+When tutor mode is active via the chat header toggle:
+
+- Use `TUTOR_SYSTEM_PROMPT` in `src/main/gemini/service.js` instead of the navigation prompt.
+- `explanation` may include a markdown ` ```mermaid ` fenced block for concept diagrams (rendered in chat, stripped before TTS).
+- Prefer `action: "highlight"` over `cursor` for on-screen study emphasis.
+- Default `plan: []` for abstract concept questions with no on-screen referent.
+- RAG retrieval prefers the `study` collection under `docs/study/`.
+- Renderer executes highlights via `executeTutorVisuals()` (no Next/Complete loop); annotations persist until the next tutor answer or `/clear`.
+
+## Tutor learning widget (`mode: "tutor"`)
+
+Tutor mode also returns a first-class `widget` object on `chat:send` (see `src/main/ai/learning-widget-schema.js`):
+
+```json
+{
+  "explanation": "Spoken and chat-visible explanation (no mermaid fences when diagramCode is set).",
+  "diagramCode": "Raw Mermaid syntax for the overlay learning panel.",
+  "highlights": [
+    {
+      "id": "h0",
+      "bbox": [ymin, xmin, ymax, xmax],
+      "label": "Short label for the highlighted UI element"
+    }
+  ]
+}
+```
+
+Provider behavior:
+
+- **Gemini**: existing `{ explanation, plan }` reply is adapted via `adaptGeminiToLearningWidget()` (mermaid extracted from explanation; highlight plan items mapped to `highlights`).
+- **Ollama**: `generateObject` + Zod in `src/main/ai/tutor.js` produces the widget directly.
+
+Renderer behavior:
+
+- Overlay panel: `window.aiTools.showLearningWidget(widget)` → `ai:learning-widget:show` on overlay windows (`src/renderer/modules/learning-widget.js`).
+- Chat bubble shows `widget.explanation` only when `widget.diagramCode` is present (diagram renders in overlay, not duplicated in chat).
+- `highlightsToPlan(widget.highlights)` feeds `executeTutorVisuals()` for indigo tutor annotations.
+- `/clear` and tutor toggle off call `hideLearningWidget()` and clear annotations.
