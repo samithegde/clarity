@@ -1,4 +1,5 @@
-<img width="333" height="222" alt="image" src="https://github.com/user-attachments/assets/888c414f-8925-41f5-ae0e-7209f2ed49f6" />
+<img width="3330" height="2222" alt="image" src="https://github.com/user-attachments/assets/888c414f-8925-41f5-ae0e-7209f2ed49f6" />
+
 # Inspiration
 Right now, most AI assistants live in a browser tab. You're trying to do something on your computer, you get stuck, and to get help, you have to stop, open ChatGPT, explain what's on your screen, and switch back and forth between windows. For most people, that's just annoying. But for seniors, or people with ADHD, autism, or a learning disability, that friction is often enough to make them give up entirely. We didn't want to build another assistant you have to go to. We wanted one that's already there, looking at the same screen you are.
 
